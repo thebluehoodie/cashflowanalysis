@@ -8,7 +8,9 @@ Design goals
 - Robust to schema drift:
   - Accepts classifier output (v3) columns OR older dashboard columns.
   - Harmonizes into: Cashflow_Section, Category_L1, Category_L2, Instrument, Counterparty_Core.
-- Avoids brittle "required columns" failures (only Amount is strictly required).
+- FP&A-grade auditability:
+  - Explicit data contract validation + visible banner (no silent masking of contract failures).
+  - Clear semantics toggles for net vs gross movement, CC settlement spend proxy, baseline-only, NON-CASH inclusion.
 - Uses Dash v2+ import patterns (dash_table via `from dash import dash_table`).
 - Keeps transformations explicit + auditable.
 
@@ -21,43 +23,129 @@ Env
 from __future__ import annotations
 
 import os
+from io import StringIO
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Tuple
 
 import numpy as np
 import pandas as pd
-from dotenv import load_dotenv
-
-from dash import Dash, dcc, html, Input, Output, State, dash_table
 import plotly.express as px
+from dotenv import load_dotenv
+from dash import Dash, Input, Output, State, dcc, html, dash_table
 
 
 # ======================================================
-# ENV + IO
+# SETTINGS
 # ======================================================
 
-def load_settings() -> tuple[Path, str, int]:
-    load_dotenv()
+FONT_STACK = "Inter, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif"
+FIG_FONT = FONT_STACK
+INTER_STYLESHEET = "https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"
+GLOBAL_CSS = f"""
+html, body, div, span, applet, object, iframe,
+h1, h2, h3, h4, h5, h6, p, blockquote, pre,
+a, abbr, acronym, address, big, cite, code,
+del, dfn, em, img, ins, kbd, q, s, samp,
+small, strike, strong, sub, sup, tt, var,
+b, u, i, center,
+dl, dt, dd, ol, ul, li,
+fieldset, form, label, legend,
+table, caption, tbody, tfoot, thead, tr, th, td,
+article, aside, canvas, details, embed,
+figure, figcaption, footer, header, hgroup,
+menu, nav, output, ruby, section, summary,
+time, mark, audio, video,
+input, textarea, select, button {{
+  font-family: {FONT_STACK} !important;
+}}
+"""
+
+def load_env_file() -> None:
+    """
+    Load environment variables from a .env file if present.
+    This is required because Python does not auto-load .env.
+    """
+    # Try current working directory first (common when running from project root)
+    cwd_env = Path.cwd() / ".env"
+
+    # Also try alongside this script (common when running from /code)
+    script_env = Path(__file__).resolve().parent / ".env"
+
+    if cwd_env.exists():
+        load_dotenv(dotenv_path=cwd_env, override=False)
+    elif script_env.exists():
+        load_dotenv(dotenv_path=script_env, override=False)
+
+def load_settings() -> Tuple[str, str, int]:
     input_csv = os.getenv("ANALYSIS_INPUT_CSV", "").strip()
     if not input_csv:
-        raise ValueError("ANALYSIS_INPUT_CSV not set in .env")
+        raise ValueError("ANALYSIS_INPUT_CSV env var is required (path to classified_transactions_v3.csv)")
 
     host = os.getenv("DASH_HOST", "127.0.0.1").strip()
-    port_raw = os.getenv("DASH_PORT", "8050").strip()
-    try:
-        port = int(port_raw)
-    except ValueError:
-        port = 8050
-
-    return Path(input_csv), host, port
+    port = int(os.getenv("DASH_PORT", "8050").strip())
+    return input_csv, host, port
 
 
 # ======================================================
 # SCHEMA HARMONIZATION
 # ======================================================
 
+# ======================================================
+# DATA CONTRACT (FP&A-grade)
+# ======================================================
+
+# Hard requirements: without these the dashboard cannot operate deterministically.
+_REQUIRED_FIELDS = {"Txn_ID", "Amount"}
+
+# Soft requirements: dashboard will run in "degraded mode" if missing, but will surface a banner.
+# NOTE: we intentionally validate by families (e.g., need either Date or YearMonth).
+_SOFT_FAMILIES = {
+    "time": [{"Date"}, {"YearMonth"}],  # need at least one
+    "cashflow_section": [{"Cashflow_Section"}, {"Cashflow_Statement"}],
+    "economic_pair": [{"Category_L1", "Category_L2"}, {"Economic_Purpose_L1", "Economic_Purpose_L2"}],
+    "instrument": [{"Instrument"}, {"Bank_Rail"}],
+    "counterparty": [{"Counterparty_Core"}, {"Description"}],
+}
+
+def validate_contract(df: pd.DataFrame) -> dict:
+    """
+    Returns a dict describing required/soft missing fields and basic data quality checks.
+    This is UI-facing; do not silently "fix" contract failures.
+    """
+    missing_required = sorted([c for c in _REQUIRED_FIELDS if c not in df.columns])
+
+    soft_missing = []
+    for fam, options in _SOFT_FAMILIES.items():
+        satisfied = False
+        for opt in options:
+            if all(c in df.columns for c in opt):
+                satisfied = True
+                break
+        if not satisfied:
+            pretty = " OR ".join(["+".join(sorted(list(opt))) for opt in options])
+            soft_missing.append(f"{fam}: {pretty}")
+
+    quality = {}
+    if "Txn_ID" in df.columns:
+        quality["txn_id_nulls"] = int(df["Txn_ID"].isna().sum())
+        quality["txn_id_dupes"] = int(df["Txn_ID"].duplicated().sum())
+    if "Date" in df.columns:
+        dt = pd.to_datetime(df["Date"], errors="coerce", dayfirst=True)
+        quality["date_parse_nulls"] = int(dt.isna().sum())
+    if "Amount" in df.columns:
+        amt = pd.to_numeric(df["Amount"], errors="coerce")
+        quality["amount_parse_nulls"] = int(amt.isna().sum())
+
+    return {
+        "missing_required": missing_required,
+        "soft_missing": soft_missing,
+        "quality": quality,
+    }
+
+
 _CANONICAL_DEFAULTS = {
-    "Cashflow_Section": "OPERATING",
+    # IMPORTANT: do not default missing cashflow section to OPERATING (would hide upstream contract issues)
+    "Cashflow_Section": "UNCLASSIFIED",
     "Category_L1": "UNCLASSIFIED",
     "Category_L2": "UNCLASSIFIED",
     "Instrument": "OTHER",
@@ -65,36 +153,39 @@ _CANONICAL_DEFAULTS = {
     "Record_Type": "TRANSACTION",
     "Counterparty_Core": "",
     "Counterparty_Norm": "",
-    "Description": "",
+    "Is_CC_Settlement": False,
+    "Baseline_Eligible": True,
+    "Stability_Class": "",
+    "Event_Tag": "",
 }
 
-# Prefer these mappings if present
-_SCHEMA_ALIASES = [
-    # Classifier v3 → dashboard canonical
+# (source, target) aliases
+_SCHEMA_ALIASES: List[Tuple[str, str]] = [
     ("Cashflow_Statement", "Cashflow_Section"),
     ("Economic_Purpose_L1", "Category_L1"),
     ("Economic_Purpose_L2", "Category_L2"),
     ("Bank_Rail", "Instrument"),
-    # Older / alternate naming
-    ("Cashflow_Section", "Cashflow_Section"),
-    ("Category_L1", "Category_L1"),
-    ("Category_L2", "Category_L2"),
-    ("Instrument", "Instrument"),
 ]
 
-def _to_yearmonth(series: pd.Series) -> pd.Series:
+
+def _to_yearmonth(series) -> pd.Series:
     dt = pd.to_datetime(series, errors="coerce", dayfirst=True)
-    return dt.dt.to_period("M").astype(str)
+    return dt.dt.strftime("%Y-%m").fillna("NaT")
+
 
 def harmonize_schema(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Produce a dashboard-friendly dataframe with canonical columns.
-    Hard requirement: Amount must exist.
+    Harmonize incoming dataset into canonical dashboard columns.
+
+    Rule: Do NOT silently drop columns. Only add canonical columns (with explicit defaults)
+    and map known aliases. Any missing contract issues should be surfaced by validate_contract.
     """
     df = df.copy()
 
     if "Amount" not in df.columns:
         raise ValueError("Missing required column: Amount")
+    if "Txn_ID" not in df.columns:
+        raise ValueError("Missing required column: Txn_ID")
 
     df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce").fillna(0.0)
 
@@ -103,15 +194,14 @@ def harmonize_schema(df: pd.DataFrame) -> pd.DataFrame:
         if "Date" in df.columns:
             df["YearMonth"] = _to_yearmonth(df["Date"])
         else:
-            # last resort: put everything into a single bucket
             df["YearMonth"] = "UNKNOWN"
     df["YearMonth"] = df["YearMonth"].astype(str)
 
-    # Ensure Description exists
+    # Ensure Description exists (useful fallback for Counterparty)
     if "Description" not in df.columns:
         df["Description"] = ""
 
-    # Create canonical columns; fill from best available sources
+    # Create canonical columns; fill from defaults if missing
     for canonical, default in _CANONICAL_DEFAULTS.items():
         if canonical not in df.columns:
             df[canonical] = default
@@ -120,16 +210,16 @@ def harmonize_schema(df: pd.DataFrame) -> pd.DataFrame:
     for src, tgt in _SCHEMA_ALIASES:
         if src in df.columns and tgt in df.columns:
             tgt_blank = df[tgt].astype(str).str.strip().eq("") | df[tgt].isna()
-            # If target is all blank/NA, overwrite entirely; else fill blanks only.
             if tgt_blank.all():
                 df[tgt] = df[src]
             else:
                 df.loc[tgt_blank, tgt] = df.loc[tgt_blank, src]
+        elif src in df.columns and tgt not in df.columns:
+            df[tgt] = df[src]
 
-    # Counterparty normalization
-    if "Counterparty_Norm" not in df.columns or df["Counterparty_Norm"].astype(str).str.strip().eq("").all():
-        df["Counterparty_Norm"] = df["Description"].astype(str).str.upper()
-
+    # Counterparty fallback
+    if "Counterparty_Norm" not in df.columns:
+        df["Counterparty_Norm"] = ""
     if "Counterparty_Core" not in df.columns or df["Counterparty_Core"].astype(str).str.strip().eq("").all():
         df["Counterparty_Core"] = df["Counterparty_Norm"].astype(str).str.slice(0, 80)
 
@@ -140,23 +230,55 @@ def harmonize_schema(df: pd.DataFrame) -> pd.DataFrame:
     df["Instrument"] = df["Instrument"].astype(str).str.upper().str.strip()
     df["Record_Type"] = df["Record_Type"].astype(str).str.upper().str.strip()
 
-    # Flags
+    # Coerce booleans
+    if "Is_CC_Settlement" in df.columns:
+        df["Is_CC_Settlement"] = df["Is_CC_Settlement"].fillna(False).astype(bool)
+    else:
+        df["Is_CC_Settlement"] = False
+
+    if "Baseline_Eligible" in df.columns:
+        # accept 0/1, True/False, strings
+        df["Baseline_Eligible"] = df["Baseline_Eligible"].fillna(False).astype(bool)
+    else:
+        df["Baseline_Eligible"] = True
+
+    # Derived helpers
+    df["AbsAmount"] = df["Amount"].abs()
     df["Is_Summary"] = df["Record_Type"].eq("SUMMARY") | df["Category_L2"].eq("BALANCE_BF")
     df["Is_TransferSection"] = df["Cashflow_Section"].eq("TRANSFER")
     df["Is_Inflow"] = df["Amount"] > 0
     df["Is_Outflow"] = df["Amount"] < 0
-    df["AbsAmount"] = df["Amount"].abs()
 
     return df
 
 
 # ======================================================
-# METRICS
+# KPI + Analytics helpers
 # ======================================================
+
+def _kpi_tile(label: str, value: float) -> html.Div:
+    return html.Div(
+        [
+            html.Div(label, style={"fontSize": "12px", "color": "#666"}),
+            html.Div(f"{value:,.2f}", style={"fontSize": "20px", "fontWeight": "600"}),
+        ],
+        style={
+            "display": "inline-block",
+            "padding": "10px 14px",
+            "border": "1px solid #ddd",
+            "borderRadius": "6px",
+            "marginRight": "10px",
+            "marginBottom": "10px",
+            "minWidth": "220px",
+            "verticalAlign": "top",
+            "backgroundColor": "#fff",
+        },
+    )
+
 
 def compute_monthly_kpis(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Assumes df already filtered for desired inclusion/exclusion.
+    Assumes df already filtered for desired inclusion/exclusion and lens selection.
     """
     d = df.copy()
 
@@ -172,25 +294,26 @@ def compute_monthly_kpis(df: pd.DataFrame) -> pd.DataFrame:
         {
             "Operating_Income": income,
             "Operating_Spend": spend,
+            "Operating_Net": income.add(spend, fill_value=0),
             "Investing_Net": inv,
             "Financing_Net": fin,
             "Net_Cashflow": net,
         }
-    ).fillna(0.0).reset_index()
+    ).fillna(0.0)
 
-    out["Operating_Spend_Abs"] = out["Operating_Spend"].abs()
-    out["Operating_Net"] = out["Operating_Income"] + out["Operating_Spend"]
-    return out.sort_values("YearMonth")
+    out = out.reset_index().sort_values("YearMonth")
+    return out
 
 
 def recurring_candidates(df: pd.DataFrame, min_months: int = 6) -> pd.DataFrame:
     """
     Heuristic recurring detector for outflows:
-    - Focus on Operating outflows by default
+    - Focus on outflows across sections (excluding transfers)
     - Group by Category_L2 and compute months_present, avg_abs, cov
     """
     d = df.copy()
-    d = d[(d["Amount"] < 0) & (d["Cashflow_Section"].isin(["OPERATING", "FINANCING", "INVESTING"]))]
+    d = d[(d["Amount"] < 0) & (d["Cashflow_Section"].isin(["OPERATING", "FINANCING", "INVESTING", "NON-CASH", "UNCLASSIFIED"]))]
+    d = d[~d["Is_TransferSection"]]
 
     g = d.groupby("Category_L2")
     months_present = g["YearMonth"].nunique()
@@ -198,55 +321,50 @@ def recurring_candidates(df: pd.DataFrame, min_months: int = 6) -> pd.DataFrame:
     std_abs = g["AbsAmount"].std(ddof=0)
     med_abs = g["AbsAmount"].median()
 
+    cov = (std_abs / avg_abs).replace([np.inf, -np.inf], np.nan)
+
     out = pd.DataFrame(
         {
-            "months_present": months_present,
-            "avg_abs": avg_abs,
-            "median_abs": med_abs,
-            "std_abs": std_abs,
+            "Category_L2": months_present.index,
+            "months_present": months_present.values,
+            "avg_abs": avg_abs.values,
+            "med_abs": med_abs.values,
+            "std_abs": std_abs.values,
+            "cov": cov.values,
         }
-    ).fillna(0.0)
-    out["cov"] = np.where(out["avg_abs"] > 0, out["std_abs"] / out["avg_abs"], np.nan)
-    out = out.reset_index()
+    ).sort_values(["months_present", "avg_abs"], ascending=[False, False])
 
-    out["is_recurring_candidate"] = (out["months_present"] >= min_months) & (out["cov"].fillna(999) <= 1.0)
-    return out.sort_values(["is_recurring_candidate", "months_present", "avg_abs"], ascending=[False, False, False])
+    out = out[out["months_present"] >= int(min_months)]
+    return out
 
 
 # ======================================================
-# DASH APP
+# APP
 # ======================================================
 
-def _kpi_tile(title: str, value: float) -> html.Div:
-    return html.Div(
-        [
-            html.Div(title, style={"fontSize": "12px", "color": "#555"}),
-            html.Div(f"{value:,.2f}", style={"fontSize": "20px", "fontWeight": "bold"}),
-        ],
-        style={
-            "border": "1px solid #ddd",
-            "borderRadius": "10px",
-            "padding": "10px 12px",
-            "minWidth": "210px",
-            "backgroundColor": "white",
-        },
+def build_app(df: pd.DataFrame, contract: dict | None = None, host: str = "127.0.0.1", port: int = 8050):
+    app = Dash(
+        __name__,
+        external_stylesheets=[INTER_STYLESHEET],
     )
 
-def build_app(df: pd.DataFrame) -> Dash:
-    app = Dash(__name__)
     app.title = "Cashflow FP&A Dashboard"
 
     ym_options = sorted([x for x in df["YearMonth"].unique() if x and x != "NaT"])
     min_ym = ym_options[0] if ym_options else "UNKNOWN"
     max_ym = ym_options[-1] if ym_options else "UNKNOWN"
 
-    section_options = ["OPERATING", "INVESTING", "FINANCING", "TRANSFER"]
+    section_options = ["OPERATING", "INVESTING", "FINANCING", "TRANSFER", "NON-CASH"]
     cat1_options = sorted(df["Category_L1"].unique())
     cat2_options = sorted(df["Category_L2"].unique())
 
     app.layout = html.Div(
         [
+            dcc.Markdown(f"<style>{GLOBAL_CSS}</style>", dangerously_allow_html=True),
             html.H2("Personal Cashflow FP&A Dashboard"),
+
+            html.Div(id="contract_banner", style={"marginBottom": "10px"}),
+            dcc.Store(id="contract_store", data=contract or {}),
 
             html.Div(
                 [
@@ -291,6 +409,43 @@ def build_app(df: pd.DataFrame) -> Dash:
                                 value=["SUM"],
                                 style={"marginTop": "4px"},
                             ),
+
+                            html.Label("Cash Lens", style={"marginTop": "10px"}),
+                            dcc.RadioItems(
+                                id="cash_lens",
+                                options=[
+                                    {"label": "Net Economic (exclude transfers from net)", "value": "NET_ECONOMIC"},
+                                    {"label": "Gross Movement (include transfers)", "value": "GROSS_MOVEMENT"},
+                                ],
+                                value="NET_ECONOMIC",
+                                labelStyle={"display": "block"},
+                            ),
+                            html.Label("Spend Lens", style={"marginTop": "10px"}),
+                            dcc.RadioItems(
+                                id="spend_mode",
+                                options=[
+                                    {"label": "Direct Spend (exclude CC settlement)", "value": "DIRECT"},
+                                    {"label": "Include CC Settlement Proxy", "value": "INCLUDE_CC_PROXY"},
+                                ],
+                                value="DIRECT",
+                                labelStyle={"display": "block"},
+                            ),
+                            html.Label("Baseline Mode", style={"marginTop": "10px"}),
+                            dcc.RadioItems(
+                                id="baseline_mode",
+                                options=[
+                                    {"label": "All Transactions", "value": "ALL"},
+                                    {"label": "Baseline Only (Baseline_Eligible=True)", "value": "BASELINE_ONLY"},
+                                ],
+                                value="ALL",
+                                labelStyle={"display": "block"},
+                            ),
+                            dcc.Checklist(
+                                id="include_non_cash",
+                                options=[{"label": "Include NON-CASH section", "value": "NC"}],
+                                value=[],
+                                style={"marginTop": "6px"},
+                            ),
                         ],
                         style={"width": "22%", "display": "inline-block", "marginLeft": "2%", "verticalAlign": "top"},
                     ),
@@ -310,6 +465,13 @@ def build_app(df: pd.DataFrame) -> Dash:
                                 options=[{"label": c, "value": c} for c in cat2_options],
                                 value=[],
                                 multi=True,
+                            ),
+                            html.Label("Search (Description / Counterparty)", style={"marginTop": "8px"}),
+                            dcc.Input(
+                                id="search_text",
+                                type="text",
+                                placeholder="contains...",
+                                style={"width": "100%"},
                             ),
                         ],
                         style={"width": "34%", "display": "inline-block", "marginLeft": "2%", "verticalAlign": "top"},
@@ -333,66 +495,85 @@ def build_app(df: pd.DataFrame) -> Dash:
                         ],
                         style={"width": "18%", "display": "inline-block", "marginLeft": "2%", "verticalAlign": "top"},
                     ),
-                ]
-            ),
-
-            html.Hr(),
-
-            html.Div(id="kpi_tiles", style={"display": "flex", "gap": "12px", "flexWrap": "wrap"}),
-
-            html.Hr(),
-
-            dcc.Graph(id="net_cashflow_line"),
-
-            html.Div(
-                [
-                    html.Div(dcc.Graph(id="income_stack"), style={"width": "49%", "display": "inline-block"}),
-                    html.Div(dcc.Graph(id="spend_stack"), style={"width": "49%", "display": "inline-block", "marginLeft": "2%"}),
-                ]
-            ),
-
-            html.Div(
-                [
-                    html.Div(dcc.Graph(id="drill_bar"), style={"width": "49%", "display": "inline-block"}),
-                    html.Div(dcc.Graph(id="recurring_bar"), style={"width": "49%", "display": "inline-block", "marginLeft": "2%"}),
-                ]
-            ),
-
-            html.Hr(),
-            html.H4("Transaction Explorer"),
-            dcc.Input(
-                id="search_text",
-                type="text",
-                placeholder="Search Description / Counterparty_Core",
-                style={"width": "60%"},
-            ),
-            html.Button("Apply Search", id="search_btn", style={"marginLeft": "8px"}),
-
-            html.Div(style={"height": "10px"}),
-
-            dash_table.DataTable(
-                id="tx_table",
-                columns=[],
-                data=[],
-                page_size=25,
-                sort_action="native",
-                filter_action="native",
-                row_selectable="multi",
-                style_table={"overflowX": "auto"},
-                style_cell={
-                    "fontFamily": "Arial",
-                    "fontSize": "12px",
-                    "padding": "6px",
-                    "whiteSpace": "normal",
-                    "height": "auto",
-                },
-                style_header={"fontWeight": "bold"},
+                ],
+                style={"padding": "8px 0"},
             ),
 
             dcc.Store(id="df_store"),
+
+            html.Div(id="kpi_tiles"),
+
+            html.Div(
+                [
+                    dcc.Graph(id="net_cashflow_line", style={"height": "320px"}),
+                ]
+            ),
+
+            html.Div(
+                [
+                    html.Div([dcc.Graph(id="income_stack")], style={"width": "49%", "display": "inline-block"}),
+                    html.Div([dcc.Graph(id="spend_stack")], style={"width": "49%", "display": "inline-block", "marginLeft": "2%"}),
+                ],
+                style={"marginTop": "10px"},
+            ),
+
+            html.Div(
+                [
+                    html.Div([dcc.Graph(id="drill_bar")], style={"width": "49%", "display": "inline-block"}),
+                    html.Div([dcc.Graph(id="recurring_bar")], style={"width": "49%", "display": "inline-block", "marginLeft": "2%"}),
+                ],
+                style={"marginTop": "10px"},
+            ),
+
+            html.H3("Transactions"),
+            dash_table.DataTable(
+                id="tx_table",
+                page_size=25,
+                sort_action="native",
+                filter_action="native",
+                style_table={"overflowX": "auto"},
+                style_cell={"fontFamily": FONT_STACK, "fontSize": "12px", "padding": "6px"},
+                style_header={"fontWeight": "600"},
+            ),
         ],
-        style={"fontFamily": "Arial", "margin": "16px", "backgroundColor": "#fafafa"},
+        style={
+            "fontFamily": "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif",
+            "backgroundColor": "#f7f7f7",
+        },
     )
+
+    # ---------- contract banner ----------
+    @app.callback(Output("contract_banner", "children"), Input("contract_store", "data"))
+    def render_contract_banner(c):
+        if not c:
+            return ""
+        missing_required = c.get("missing_required") or []
+        soft_missing = c.get("soft_missing") or []
+        quality = c.get("quality") or {}
+
+        if not missing_required and not soft_missing and not quality:
+            return ""
+
+        parts = []
+        if missing_required:
+            parts.append(html.Div(["Missing required fields: ", html.Code(", ".join(missing_required))],
+                                  style={"color": "#b00020", "fontWeight": "500"}))
+        if soft_missing:
+            parts.append(html.Div(["Degraded mode (missing): ", html.Code(" | ".join(soft_missing))],
+                                  style={"color": "#8a4b08"}))
+        if quality:
+            qtxt = ", ".join([f"{k}={v}" for k, v in quality.items()])
+            parts.append(html.Div(["Quality checks: ", html.Code(qtxt)],
+                                  style={"color": "#333"}))
+
+        return html.Div(
+            parts,
+            style={
+                "border": "1px solid #ddd",
+                "padding": "8px 10px",
+                "backgroundColor": "#fafafa",
+            },
+        )
 
     # ---------- filtering ----------
     @app.callback(
@@ -404,8 +585,11 @@ def build_app(df: pd.DataFrame) -> Dash:
         Input("cat2_filter", "value"),
         Input("exclude_transfers", "value"),
         Input("exclude_summary", "value"),
+        Input("baseline_mode", "value"),
+        Input("include_non_cash", "value"),
+        Input("search_text", "value"),
     )
-    def filter_df(ym_start, ym_end, sections, cat1, cat2, ex_transfers, ex_summary):
+    def filter_df(ym_start, ym_end, sections, cat1, cat2, ex_transfers, ex_summary, baseline_mode, include_non_cash, search_text):
         d = df.copy()
 
         if ym_start and ym_end and ym_start != "UNKNOWN" and ym_end != "UNKNOWN":
@@ -425,6 +609,24 @@ def build_app(df: pd.DataFrame) -> Dash:
         if cat2:
             d = d[d["Category_L2"].isin([c.upper() for c in cat2])]
 
+        # Baseline mode (if column exists)
+        if baseline_mode == "BASELINE_ONLY" and "Baseline_Eligible" in d.columns:
+            d = d[d["Baseline_Eligible"].fillna(False) == True]
+
+        # NON-CASH inclusion (explicit)
+        if not (include_non_cash and "NC" in include_non_cash):
+            d = d[d["Cashflow_Section"] != "NON-CASH"]
+
+        # Search
+        if search_text and str(search_text).strip():
+            s = str(search_text).strip().lower()
+            hay = (
+                d["Description"].astype(str).str.lower().fillna("")
+                + " "
+                + d["Counterparty_Core"].astype(str).str.lower().fillna("")
+            )
+            d = d[hay.str.contains(s, regex=False)]
+
         return d.to_json(date_format="iso", orient="split")
 
     # ---------- charts + KPIs ----------
@@ -438,47 +640,73 @@ def build_app(df: pd.DataFrame) -> Dash:
         Input("df_store", "data"),
         Input("drill_mode", "value"),
         Input("topn", "value"),
+        Input("cash_lens", "value"),
+        Input("spend_mode", "value"),
     )
-    def refresh_views(djson, drill_mode, topn):
-        d = pd.read_json(djson, orient="split") if djson else df.copy()
+    def refresh_views(djson, drill_mode, topn, cash_lens, spend_mode):
+        d = pd.read_json(StringIO(djson), orient="split") if djson else df.copy()
 
-        monthly = compute_monthly_kpis(d)
+        monthly_source = d.copy()
 
-        total_income = float(d[(d["Cashflow_Section"] == "OPERATING") & (d["Amount"] > 0)]["Amount"].sum())
-        total_spend = float(d[(d["Cashflow_Section"] == "OPERATING") & (d["Amount"] < 0)]["Amount"].sum())  # negative
+        # Cash lens determines whether transfers are included in net calculations/line
+        if cash_lens == "NET_ECONOMIC" and "Is_TransferSection" in monthly_source.columns:
+            monthly_source = monthly_source[~monthly_source["Is_TransferSection"]].copy()
+
+        monthly = compute_monthly_kpis(monthly_source)
+
+        total_income = float(monthly_source[(monthly_source["Cashflow_Section"] == "OPERATING") & (monthly_source["Amount"] > 0)]["Amount"].sum())
+
+        # Spend lens: optionally include CC settlement proxy outflows
+        sp_base = monthly_source[(monthly_source["Cashflow_Section"] == "OPERATING") & (monthly_source["Amount"] < 0)].copy()
+        if spend_mode == "DIRECT" and "Is_CC_Settlement" in monthly_source.columns:
+            sp_base = sp_base[~monthly_source.loc[sp_base.index, "Is_CC_Settlement"].fillna(False)]
+        elif spend_mode == "INCLUDE_CC_PROXY" and "Is_CC_Settlement" in monthly_source.columns:
+            cc = monthly_source[(monthly_source["Is_CC_Settlement"].fillna(False)) & (monthly_source["Amount"] < 0)].copy()
+            sp_base = pd.concat([sp_base, cc], ignore_index=False)
+
+        total_spend = float(sp_base["Amount"].sum())  # negative
         net_operating = total_income + total_spend
-        inv = float(d[d["Cashflow_Section"] == "INVESTING"]["Amount"].sum())
-        fin = float(d[d["Cashflow_Section"] == "FINANCING"]["Amount"].sum())
-        net = float(d["Amount"].sum())
+        inv = float(monthly_source[monthly_source["Cashflow_Section"] == "INVESTING"]["Amount"].sum())
+        fin = float(monthly_source[monthly_source["Cashflow_Section"] == "FINANCING"]["Amount"].sum())
+        net = float(monthly_source["Amount"].sum())
+
+        cc_proxy_abs = 0.0
+        if "Is_CC_Settlement" in monthly_source.columns:
+            cc_proxy_abs = float(abs(monthly_source[monthly_source["Is_CC_Settlement"].fillna(False) == True]["Amount"].sum()))
 
         tiles = [
             _kpi_tile("Operating Income", total_income),
-            _kpi_tile("Operating Spend (abs)", abs(total_spend)),
+            _kpi_tile(f"Operating Spend (abs) [{spend_mode}]", abs(total_spend)),
+            _kpi_tile("CC Settlement Proxy (abs)", cc_proxy_abs),
             _kpi_tile("Operating Net", net_operating),
             _kpi_tile("Investing Net (signed)", inv),
             _kpi_tile("Financing Net (signed)", fin),
             _kpi_tile("Net Cashflow (signed)", net),
         ]
 
-        fig_net = px.line(monthly, x="YearMonth", y="Net_Cashflow", markers=True, title="Net Cashflow by Month (signed)")
+        fig_net = px.line(monthly, x="YearMonth", y="Net_Cashflow", markers=True, title=f"Net Cashflow by Month (signed) [{cash_lens}]")
+        fig_net.update_layout(font=dict(family=FIG_FONT, size=12))
 
-        inc = d[(d["Cashflow_Section"] == "OPERATING") & (d["Amount"] > 0)]
+        inc = monthly_source[(monthly_source["Cashflow_Section"] == "OPERATING") & (monthly_source["Amount"] > 0)]
         if inc.empty:
             fig_inc = px.bar(title="Operating Income (no data)")
         else:
             inc_g = inc.groupby(["YearMonth", "Category_L2"])["Amount"].sum().reset_index()
             fig_inc = px.bar(inc_g, x="YearMonth", y="Amount", color="Category_L2", title="Operating Income by Category_L2")
+        fig_inc.update_layout(font=dict(family=FIG_FONT, size=12))
 
-        sp = d[(d["Cashflow_Section"] == "OPERATING") & (d["Amount"] < 0)]
+        sp = sp_base.copy()
         if sp.empty:
             fig_sp = px.bar(title="Operating Spend (no data)")
         else:
             sp_g = sp.groupby(["YearMonth", "Category_L2"])["AbsAmount"].sum().reset_index()
-            fig_sp = px.bar(sp_g, x="YearMonth", y="AbsAmount", color="Category_L2", title="Operating Spend by Category_L2 (abs)")
+            fig_sp = px.bar(sp_g, x="YearMonth", y="AbsAmount", color="Category_L2", title=f"Operating Spend by Category_L2 (abs) [{spend_mode}]")
+        fig_sp.update_layout(font=dict(family=FIG_FONT, size=12))
 
         drill_col = drill_mode if drill_mode in d.columns else "Category_L2"
         g = d.groupby(drill_col)["AbsAmount"].sum().reset_index().sort_values("AbsAmount", ascending=False).head(int(topn))
         fig_drill = px.bar(g, x="AbsAmount", y=drill_col, orientation="h", title=f"Top {topn} by Abs Amount ({drill_col})")
+        fig_drill.update_layout(font=dict(family=FIG_FONT, size=12))
 
         rec = recurring_candidates(d, min_months=6).head(25).copy()
         if rec.empty:
@@ -490,6 +718,7 @@ def build_app(df: pd.DataFrame) -> Dash:
                 + " | cov=" + rec["cov"].fillna(np.nan).round(2).astype(str)
             )
             fig_rec = px.bar(rec, x="avg_abs", y="label", orientation="h", title="Recurring candidates (avg abs outflow)")
+        fig_rec.update_layout(font=dict(family=FIG_FONT, size=12))
 
         return tiles, fig_net, fig_inc, fig_sp, fig_drill, fig_rec
 
@@ -497,33 +726,26 @@ def build_app(df: pd.DataFrame) -> Dash:
     @app.callback(
         Output("tx_table", "columns"),
         Output("tx_table", "data"),
-        Input("search_btn", "n_clicks"),
-        State("search_text", "value"),
-        State("df_store", "data"),
+        Input("df_store", "data"),
     )
-    def render_table(_n, q, djson):
-        d = pd.read_json(djson, orient="split") if djson else df.copy()
-
-        if q:
-            qu = str(q).upper().strip()
-            if qu:
-                mask = (
-                    d["Description"].astype(str).str.upper().str.contains(qu, na=False)
-                    | d["Counterparty_Core"].astype(str).str.upper().str.contains(qu, na=False)
-                )
-                d = d[mask]
-
-        # Keep responsive: show last 500 (user can filter/sort in-table)
-        d = d.sort_values(["YearMonth"], ascending=False).head(500).copy()
+    def refresh_table(djson):
+        d = pd.read_json(StringIO(djson), orient="split") if djson else df.copy()
 
         preferred_cols = [
-            "YearMonth", "Date", "Amount",
-            "Cashflow_Section", "Category_L1", "Category_L2",
-            "Instrument", "Counterparty_Core", "Description",
-            "Rule_ID", "Was_Overridden", "Override_Reason",
+            "Date", "YearMonth", "Description", "Amount", "Balance",
+            "Withdrawals", "Deposits",
+            "Txn_ID", "Record_Type", "Flow_Nature",
+            "Cashflow_Statement", "Cashflow_Section",
+            "Economic_Purpose_L1", "Economic_Purpose_L2",
+            "Managerial_Purpose_L1", "Managerial_Purpose_L2",
+            "Baseline_Eligible", "Stability_Class", "Event_Tag",
+            "Bank_Rail", "Instrument",
+            "Counterparty_Norm", "Counterparty_Core",
+            "Was_Overridden", "Override_ID_Applied", "Override_Reason",
+            "Rule_ID", "Rule_Explanation",
+            "SourceFile", "RowOrder", "RowsMerged",
         ]
         cols = [c for c in preferred_cols if c in d.columns]
-
         columns = [{"name": c, "id": c} for c in cols]
         data = d[cols].to_dict("records")
         return columns, data
@@ -532,11 +754,17 @@ def build_app(df: pd.DataFrame) -> Dash:
 
 
 def main():
+    load_env_file()
     input_csv, host, port = load_settings()
     df_raw = pd.read_csv(input_csv)
+
+    contract = validate_contract(df_raw)
+    if contract.get("missing_required"):
+        raise ValueError(f"Data contract failure: missing required fields {contract.get('missing_required')}")
+
     df = harmonize_schema(df_raw)
 
-    app = build_app(df)
+    app = build_app(df, contract=contract, host=host, port=port)
     app.run(debug=False, host=host, port=port)
 
 
