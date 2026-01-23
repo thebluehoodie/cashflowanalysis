@@ -1,3 +1,5 @@
 # Ignore large or generated data folders
 cashflow analysis/
 data/
+__pycache__/
+*.pyc

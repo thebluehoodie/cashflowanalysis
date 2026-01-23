@@ -95,11 +95,12 @@ def load_settings() -> Tuple[str, str, int]:
 # ======================================================
 
 # Hard requirements: without these the dashboard cannot operate deterministically.
-_REQUIRED_FIELDS = {"Txn_ID", "Amount"}
+_REQUIRED_FIELDS = {"Amount"}
 
 # Soft requirements: dashboard will run in "degraded mode" if missing, but will surface a banner.
 # NOTE: we intentionally validate by families (e.g., need either Date or YearMonth).
 _SOFT_FAMILIES = {
+    "identity": [{"Txn_ID"}],
     "time": [{"Date"}, {"YearMonth"}],  # need at least one
     "cashflow_section": [{"Cashflow_Section"}, {"Cashflow_Statement"}],
     "economic_pair": [{"Category_L1", "Category_L2"}, {"Economic_Purpose_L1", "Economic_Purpose_L2"}],
@@ -173,6 +174,24 @@ def _to_yearmonth(series) -> pd.Series:
     return dt.dt.strftime("%Y-%m").fillna("NaT")
 
 
+_BOOL_TRUE = {"TRUE", "1", "YES", "Y", "T"}
+_BOOL_FALSE = {"FALSE", "0", "NO", "N", "F", ""}
+
+def _coerce_bool(val: object) -> bool:
+    if pd.isna(val):
+        return False
+    if isinstance(val, (bool, np.bool_)):
+        return bool(val)
+    if isinstance(val, (int, float)) and not isinstance(val, bool):
+        return bool(int(val))
+    s = str(val).strip().upper()
+    if s in _BOOL_TRUE:
+        return True
+    if s in _BOOL_FALSE:
+        return False
+    raise ValueError(f"Invalid boolean value: {val}")
+
+
 def harmonize_schema(df: pd.DataFrame) -> pd.DataFrame:
     """
     Harmonize incoming dataset into canonical dashboard columns.
@@ -184,8 +203,6 @@ def harmonize_schema(df: pd.DataFrame) -> pd.DataFrame:
 
     if "Amount" not in df.columns:
         raise ValueError("Missing required column: Amount")
-    if "Txn_ID" not in df.columns:
-        raise ValueError("Missing required column: Txn_ID")
 
     df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce").fillna(0.0)
 
@@ -218,8 +235,8 @@ def harmonize_schema(df: pd.DataFrame) -> pd.DataFrame:
             df[tgt] = df[src]
 
     # Counterparty fallback
-    if "Counterparty_Norm" not in df.columns:
-        df["Counterparty_Norm"] = ""
+    if "Counterparty_Norm" not in df.columns or df["Counterparty_Norm"].astype(str).str.strip().eq("").all():
+        df["Counterparty_Norm"] = df["Description"].astype(str).str.upper()
     if "Counterparty_Core" not in df.columns or df["Counterparty_Core"].astype(str).str.strip().eq("").all():
         df["Counterparty_Core"] = df["Counterparty_Norm"].astype(str).str.slice(0, 80)
 
@@ -232,13 +249,12 @@ def harmonize_schema(df: pd.DataFrame) -> pd.DataFrame:
 
     # Coerce booleans
     if "Is_CC_Settlement" in df.columns:
-        df["Is_CC_Settlement"] = df["Is_CC_Settlement"].fillna(False).astype(bool)
+        df["Is_CC_Settlement"] = df["Is_CC_Settlement"].apply(_coerce_bool)
     else:
         df["Is_CC_Settlement"] = False
 
     if "Baseline_Eligible" in df.columns:
-        # accept 0/1, True/False, strings
-        df["Baseline_Eligible"] = df["Baseline_Eligible"].fillna(False).astype(bool)
+        df["Baseline_Eligible"] = df["Baseline_Eligible"].apply(_coerce_bool)
     else:
         df["Baseline_Eligible"] = True
 

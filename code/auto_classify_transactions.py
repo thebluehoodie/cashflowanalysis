@@ -258,33 +258,268 @@ def detect_cc_issuer(desc_u: str) -> Optional[str]:
 def contains_any_token(desc_u: str, tokens: List[str]) -> bool:
     return any(t.upper() in desc_u for t in tokens)
 
+def _collapse_ws(s: str) -> str:
+    return " ".join(s.split())
+
+def _canon_text(s: object) -> str:
+    if pd.isna(s):
+        return ""
+    return _collapse_ws(str(s)).upper()
+
+def _canon_date(d: object) -> str:
+    if pd.isna(d):
+        return ""
+    s = str(d).strip()
+    if s == "":
+        return ""
+    ts = pd.to_datetime(s, errors="coerce", dayfirst=True)
+    if pd.isna(ts):
+        return _collapse_ws(s)
+    return ts.strftime("%Y-%m-%d")
+
+def _canon_amount_cents(a: object) -> str:
+    if pd.isna(a):
+        raise ValueError("Missing Amount for Txn_ID.")
+    s = str(a).strip()
+    if s == "":
+        raise ValueError("Missing Amount for Txn_ID.")
+    try:
+        v = float(s)
+    except ValueError as exc:
+        raise ValueError(f"Invalid Amount for Txn_ID: {a}") from exc
+    return str(int(round(v * 100)))
+
+def _canon_yearmonth(ym: object) -> str:
+    if pd.isna(ym):
+        return ""
+    return _collapse_ws(str(ym))
+
+def _mk_row_fingerprint(row: pd.Series) -> str:
+    """
+    Generate deterministic row fingerprint from stable content fields.
+
+    Used as final tie-breaker for occurrence index assignment (NOT part of Txn_ID hash).
+    This ensures deterministic ordering even when all other tie-breakers are identical.
+
+    CRITICAL: All numeric fields canonicalized to integer cents to prevent
+    floating-point string variations from affecting determinism.
+
+    Fields included (all stable, content-based):
+    - Date, YearMonth, Amount, Description, SourceFile (base_key fields)
+    - Balance, Withdrawals, Deposits (additional numeric differentiators)
+
+    Returns:
+        40-character SHA-1 hex hash of canonicalized row content
+    """
+    date = _canon_date(row.get("Date", ""))
+    if date == "":
+        date = "NA"
+
+    year_month = _canon_yearmonth(row.get("YearMonth", ""))
+
+    # HARDENING: Canonicalize ALL numeric fields to integer cents
+    amount = _canon_amount_cents(row.get("Amount", "0"))
+
+    desc = _canon_text(row.get("Description", ""))
+    source = _canon_text(row.get("SourceFile", ""))
+
+    # Additional fields for fingerprint (canonicalized to cents)
+    balance_val = row.get("Balance", None)
+    balance = _canon_amount_cents(balance_val) if pd.notna(balance_val) else "NaN"
+
+    withdrawals_val = row.get("Withdrawals", None)
+    withdrawals = _canon_amount_cents(withdrawals_val) if pd.notna(withdrawals_val) else "NaN"
+
+    deposits_val = row.get("Deposits", None)
+    deposits = _canon_amount_cents(deposits_val) if pd.notna(deposits_val) else "NaN"
+
+    # Concatenate all fields
+    fingerprint_key = "|".join([
+        date, year_month, amount, desc, source,
+        balance, withdrawals, deposits
+    ])
+
+    return hashlib.sha1(fingerprint_key.encode("utf-8")).hexdigest()
+
+def _mk_txn_id(row: pd.Series, occurrence_index: int) -> str:
+    """
+    Generate Txn_ID with occurrence index.
+
+    New scheme (order-independent):
+    - base_key = Date | YearMonth | Amount_cents | Description | SourceFile
+    - RowOrder REMOVED from base_key for order independence
+    - occurrence_index added for disambiguation when base_keys collide
+
+    Args:
+        row: Transaction row with required fields
+        occurrence_index: 1-based index within duplicate base_key group
+
+    Returns:
+        40-character SHA-1 hex hash
+    """
+    date = _canon_date(row.get("Date", ""))
+    if date == "":
+        date = "NA"
+
+    year_month = _canon_yearmonth(row.get("YearMonth", ""))
+    if year_month == "":
+        raise ValueError("Missing YearMonth for Txn_ID.")
+
+    amount_cents = _canon_amount_cents(row.get("Amount", ""))
+    desc = _canon_text(row.get("Description", ""))
+
+    source = _canon_text(row.get("SourceFile", ""))
+    if source == "":
+        raise ValueError("Missing SourceFile for Txn_ID.")
+
+    # Build base_key WITHOUT RowOrder
+    base_key = "|".join([date, year_month, amount_cents, desc, source])
+
+    # Append occurrence index
+    occ_suffix = f"OCC{occurrence_index:03d}"
+    raw_key = f"{base_key}|{occ_suffix}"
+
+    return hashlib.sha1(raw_key.encode("utf-8")).hexdigest()
+
+
+def _generate_occurrence_indices(df: pd.DataFrame) -> pd.Series:
+    """
+    Assign occurrence index (1-based) to each row within base_key groups.
+
+    For transactions with identical base_key (Date, YearMonth, Amount, Description, SourceFile),
+    assign deterministic occurrence indices based on tie-breaker sort:
+      1. Balance (ascending, NaN last)
+      2. Withdrawals (ascending, NaN last)
+      3. Deposits (ascending, NaN last)
+      4. Amount (ascending, NaN last)
+      5. row_fingerprint (ascending) - final deterministic tie-breaker
+
+    Note: RowOrder has been REMOVED to achieve true order-independence.
+    row_fingerprint ensures deterministic ordering even when all other fields are identical.
+
+    HARDENING: Detects true indistinguishable duplicates (where row_fingerprint is identical
+    within a base_key group) and raises ValueError to prevent silent instability.
+
+    Returns:
+        pd.Series of occurrence indices (1, 2, 3, ...) aligned with df index
+
+    Raises:
+        ValueError: If indistinguishable duplicate transactions are detected
+    """
+    df_work = df.copy()
+
+    # Build base_key for grouping
+    df_work["_base_key"] = (
+        df_work["Date"].apply(_canon_date).replace("", "NA") + "|" +
+        df_work["YearMonth"].apply(_canon_yearmonth) + "|" +
+        df_work["Amount"].apply(lambda x: str(int(round(float(x) * 100)))) + "|" +
+        df_work["Description"].apply(_canon_text) + "|" +
+        df_work["SourceFile"].apply(_canon_text)
+    )
+
+    # Generate row fingerprint as final deterministic tie-breaker
+    df_work["_row_fingerprint"] = df_work.apply(_mk_row_fingerprint, axis=1)
+
+    # HARDENING: Detect true indistinguishable duplicates
+    # Check for rows with identical base_key AND identical row_fingerprint
+    dup_check = df_work.groupby(["_base_key", "_row_fingerprint"]).size()
+    true_dups = dup_check[dup_check > 1]
+
+    if not true_dups.empty:
+        # Find sample rows for error message
+        first_dup_key = true_dups.index[0]
+        dup_rows = df_work[
+            (df_work["_base_key"] == first_dup_key[0]) &
+            (df_work["_row_fingerprint"] == first_dup_key[1])
+        ]
+
+        error_msg = (
+            f"FATAL: Indistinguishable duplicate transactions detected.\n"
+            f"Txn_ID cannot be made stable when rows are identical across ALL content fields.\n"
+            f"\nDetected {len(true_dups)} duplicate groups affecting {true_dups.sum()} rows.\n"
+            f"\nSample duplicate group (base_key + fingerprint identical):\n"
+            f"{dup_rows[['Date', 'Amount', 'Description', 'SourceFile', 'Balance']].to_string(index=False)}\n"
+            f"\nThis indicates:\n"
+            f"  - Duplicate bank statement ingestion, OR\n"
+            f"  - True duplicate transactions with no differentiating fields\n"
+            f"\nAction required:\n"
+            f"  - Review source CSV files for duplicates\n"
+            f"  - Add manual differentiating field if these are truly distinct transactions"
+        )
+        raise ValueError(error_msg)
+
+    # Sort by tie-breaker within each base_key group
+    # Use stable mergesort for consistency
+    df_sorted = df_work.sort_values(
+        by=["_base_key", "Balance", "Withdrawals", "Deposits", "Amount", "_row_fingerprint"],
+        kind="mergesort",
+        na_position="last"
+    ).reset_index(drop=False)
+
+    # Assign occurrence index within each base_key group
+    df_sorted["_occurrence_index"] = df_sorted.groupby("_base_key").cumcount() + 1
+
+    # Restore original index order and return occurrence series
+    df_sorted = df_sorted.set_index("index").sort_index()
+
+    return df_sorted["_occurrence_index"]
+
+
 def ensure_txn_id(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Ensure Txn_ID exists. If missing, create stable hash from key fields.
+    Ensure Txn_ID exists. If missing, create stable hash from key fields using occurrence-based scheme.
     """
     df = df.copy()
     if "Txn_ID" not in df.columns:
         df["Txn_ID"] = ""
 
-    def _mk(row) -> str:
-        parts = [
-            str(row.get("Date", "")),
-            str(row.get("YearMonth", "")),
-            str(row.get("Amount", "")),
-            str(row.get("Description", "")),
-            str(row.get("SourceFile", "")),
-            str(row.get("RowOrder", "")),
-        ]
-        raw = "|".join(parts)
-        return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+    # Ensure RowOrder exists (needed for tie-breaker sort fallback)
+    if "RowOrder" not in df.columns:
+        df["RowOrder"] = range(len(df))
+    else:
+        row_missing = df["RowOrder"].isna() | df["RowOrder"].astype(str).str.strip().eq("")
+        if row_missing.any():
+            df.loc[row_missing, "RowOrder"] = df.loc[row_missing].index
 
+    # Generate Txn_IDs for rows that are missing them
     txn_series = df["Txn_ID"]
     missing_mask = txn_series.isna() | txn_series.astype(str).str.strip().eq("")
+
     if missing_mask.any():
-        df.loc[missing_mask, "Txn_ID"] = df.loc[missing_mask].apply(_mk, axis=1)
+        # Generate occurrence indices for ALL rows (needed for deterministic sorting)
+        df["_occurrence_index"] = _generate_occurrence_indices(df)
+
+        # Generate Txn_IDs only for missing rows
+        df.loc[missing_mask, "Txn_ID"] = df.loc[missing_mask].apply(
+            lambda row: _mk_txn_id(row, row["_occurrence_index"]), axis=1
+        )
+
+        # Drop helper column
+        df = df.drop(columns=["_occurrence_index"])
+
+    # HARDENING: Explicit invariant assertions
+    # 1. No blank Txn_IDs
     final_mask = df["Txn_ID"].isna() | df["Txn_ID"].astype(str).str.strip().eq("")
     if final_mask.any():
-        raise ValueError("Txn_ID generation failed: blank Txn_ID detected.")
+        sample = df.loc[final_mask, ["Date", "Amount", "Description", "SourceFile"]].head(5)
+        raise ValueError(f"FATAL: Blank Txn_IDs detected:\n{sample.to_string(index=False)}")
+
+    # 2. Txn_ID uniqueness must equal row count
+    txn_id_count = len(df)
+    txn_id_unique = df["Txn_ID"].nunique()
+    if txn_id_unique != txn_id_count:
+        raise ValueError(
+            f"FATAL: Txn_ID uniqueness violation. "
+            f"Expected {txn_id_count} unique Txn_IDs, got {txn_id_unique}. "
+            f"Difference: {txn_id_count - txn_id_unique} duplicates."
+        )
+
+    # 3. Legacy duplicate check (for detailed diagnostics)
+    dup_mask = df["Txn_ID"].duplicated(keep=False)
+    if dup_mask.any():
+        sample = df.loc[dup_mask, ["Txn_ID", "Date", "Amount", "Description", "SourceFile", "Balance"]].head(10)
+        raise ValueError(f"CRITICAL: Txn_ID collision after occurrence index assignment:\n{sample.to_string(index=False)}")
+
     return df
 
 
@@ -1033,7 +1268,7 @@ def main():
     output_path = out_dir / "classified_transactions_v3.csv"
     df_out.to_csv(output_path, index=False)
 
-    print(f"Classification complete → {output_path}")
+    print(f"Classification complete -> {output_path}")
 
 
 if __name__ == "__main__":
