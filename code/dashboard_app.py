@@ -30,6 +30,7 @@ from typing import List, Tuple
 import numpy as np
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 from dotenv import load_dotenv
 from dash import Dash, Input, Output, State, dcc, html, dash_table
 
@@ -95,7 +96,11 @@ def load_settings() -> Tuple[str, str, int]:
 # ======================================================
 
 # Hard requirements: without these the dashboard cannot operate deterministically.
+# FP&A semantic correctness > convenience: Cashflow_Section is mandatory.
 _REQUIRED_FIELDS = {"Amount"}
+
+# Valid Cashflow_Section values (hard block on unrecognized)
+_VALID_CASHFLOW_SECTIONS = {"OPERATING", "INVESTING", "FINANCING", "TRANSFER", "NON-CASH"}
 
 # Soft requirements: dashboard will run in "degraded mode" if missing, but will surface a banner.
 # NOTE: we intentionally validate by families (e.g., need either Date or YearMonth).
@@ -112,11 +117,28 @@ def validate_contract(df: pd.DataFrame) -> dict:
     """
     Returns a dict describing required/soft missing fields and basic data quality checks.
     This is UI-facing; do not silently "fix" contract failures.
+
+    FP&A semantic correctness > convenience:
+    - Cashflow_Section (or Cashflow_Statement alias) is a HARD requirement.
+    - Unrecognized Cashflow_Section values are a HARD block.
     """
     missing_required = sorted([c for c in _REQUIRED_FIELDS if c not in df.columns])
 
+    # Hard requirement: Cashflow_Section or Cashflow_Statement must exist
+    has_cashflow_section = "Cashflow_Section" in df.columns or "Cashflow_Statement" in df.columns
+    if not has_cashflow_section:
+        missing_required.append("Cashflow_Section")
+
+    # Hard requirement: Time column (Date or YearMonth) must exist
+    has_time = "Date" in df.columns or "YearMonth" in df.columns
+    if not has_time:
+        missing_required.append("YearMonth (or Date)")
+
     soft_missing = []
     for fam, options in _SOFT_FAMILIES.items():
+        # Skip cashflow_section and time families - they are now hard requirements
+        if fam in ("cashflow_section", "time"):
+            continue
         satisfied = False
         for opt in options:
             if all(c in df.columns for c in opt):
@@ -137,10 +159,18 @@ def validate_contract(df: pd.DataFrame) -> dict:
         amt = pd.to_numeric(df["Amount"], errors="coerce")
         quality["amount_parse_nulls"] = int(amt.isna().sum())
 
+    # Validate Cashflow_Section values if column exists
+    invalid_sections = []
+    section_col = "Cashflow_Section" if "Cashflow_Section" in df.columns else "Cashflow_Statement" if "Cashflow_Statement" in df.columns else None
+    if section_col:
+        unique_sections = set(df[section_col].astype(str).str.upper().str.strip().unique())
+        invalid_sections = sorted(unique_sections - _VALID_CASHFLOW_SECTIONS - {"", "NAN", "NONE"})
+
     return {
-        "missing_required": missing_required,
+        "missing_required": sorted(set(missing_required)),
         "soft_missing": soft_missing,
         "quality": quality,
+        "invalid_cashflow_sections": invalid_sections,
     }
 
 
@@ -272,24 +302,114 @@ def harmonize_schema(df: pd.DataFrame) -> pd.DataFrame:
 # KPI + Analytics helpers
 # ======================================================
 
-def _kpi_tile(label: str, value: float) -> html.Div:
+def _kpi_tile(label: str, value: float, subtitle: str = "", color_by_sign: bool = False) -> html.Div:
+    """KPI tile with optional subtitle and sign-based coloring."""
+    if color_by_sign:
+        color = "#16a34a" if value >= 0 else "#dc2626"  # green / red
+    else:
+        color = "#111"
+
+    children = [
+        html.Div(label, style={"fontSize": "12px", "color": "#666", "fontWeight": "500"}),
+        html.Div(f"{value:,.2f}", style={"fontSize": "22px", "fontWeight": "700", "color": color}),
+    ]
+    if subtitle:
+        children.append(html.Div(subtitle, style={"fontSize": "11px", "color": "#888", "marginTop": "2px"}))
+
     return html.Div(
-        [
-            html.Div(label, style={"fontSize": "12px", "color": "#666"}),
-            html.Div(f"{value:,.2f}", style={"fontSize": "20px", "fontWeight": "600"}),
-        ],
+        children,
         style={
             "display": "inline-block",
-            "padding": "10px 14px",
+            "padding": "12px 16px",
             "border": "1px solid #ddd",
-            "borderRadius": "6px",
-            "marginRight": "10px",
+            "borderRadius": "8px",
+            "marginRight": "12px",
             "marginBottom": "10px",
-            "minWidth": "220px",
+            "minWidth": "180px",
             "verticalAlign": "top",
             "backgroundColor": "#fff",
+            "boxShadow": "0 1px 3px rgba(0,0,0,0.05)",
         },
     )
+
+
+def _build_waterfall_figure(operating_net: float, investing_net: float, financing_net: float) -> go.Figure:
+    """Build a waterfall chart for cashflow sections."""
+    net_cash = operating_net + investing_net + financing_net
+
+    # Waterfall data: measure types are 'relative' for intermediate, 'total' for final
+    fig = go.Figure(go.Waterfall(
+        name="Cashflow",
+        orientation="v",
+        measure=["relative", "relative", "relative", "total"],
+        x=["Operating Net", "Investing Net", "Financing Net", "Net Cash Movement"],
+        y=[operating_net, investing_net, financing_net, net_cash],
+        textposition="outside",
+        text=[f"{operating_net:,.0f}", f"{investing_net:,.0f}", f"{financing_net:,.0f}", f"{net_cash:,.0f}"],
+        connector={"line": {"color": "#888", "width": 1}},
+        increasing={"marker": {"color": "#16a34a"}},  # green
+        decreasing={"marker": {"color": "#dc2626"}},  # red
+        totals={"marker": {"color": "#2563eb" if net_cash >= 0 else "#dc2626"}},  # blue or red
+    ))
+
+    fig.update_layout(
+        title="Cashflow Waterfall",
+        showlegend=False,
+        font=dict(family=FIG_FONT, size=12),
+        margin=dict(t=50, b=40, l=50, r=30),
+        yaxis_title="Amount",
+    )
+
+    return fig
+
+
+def _build_drivers_figure(df: pd.DataFrame, top_n: int = 5) -> go.Figure:
+    """
+    Build drivers bar chart: top N Category_L2 by absolute magnitude, signed values.
+    Uses SAME filtered dataset as waterfall (Cashflow_Section IN OPERATING/INVESTING/FINANCING).
+    """
+    # Filter to cash movement sections only (same as waterfall)
+    d = df[df["Cashflow_Section"].isin(["OPERATING", "INVESTING", "FINANCING"])].copy()
+
+    if d.empty:
+        fig = go.Figure()
+        fig.update_layout(
+            title="Largest cash movements (by magnitude)",
+            annotations=[dict(text="No transactions in this period", x=0.5, y=0.5, showarrow=False)],
+            font=dict(family=FIG_FONT, size=12),
+        )
+        return fig
+
+    # Aggregate by Category_L2 with signed sum
+    agg = d.groupby("Category_L2")["Amount"].sum().reset_index()
+    agg["AbsAmount"] = agg["Amount"].abs()
+    agg = agg.sort_values("AbsAmount", ascending=False).head(top_n)
+
+    # Sort for display (largest magnitude at top in horizontal bar)
+    agg = agg.sort_values("AbsAmount", ascending=True)
+
+    # Color by sign
+    colors = ["#16a34a" if v >= 0 else "#dc2626" for v in agg["Amount"]]
+
+    fig = go.Figure(go.Bar(
+        x=agg["Amount"],
+        y=agg["Category_L2"],
+        orientation="h",
+        marker_color=colors,
+        text=[f"{v:+,.0f}" for v in agg["Amount"]],
+        textposition="outside",
+    ))
+
+    fig.update_layout(
+        title="Largest cash movements (by magnitude)",
+        font=dict(family=FIG_FONT, size=12),
+        margin=dict(t=50, b=40, l=150, r=50),
+        xaxis_title="Amount (signed)",
+        yaxis_title="",
+        showlegend=False,
+    )
+
+    return fig
 
 
 def compute_monthly_kpis(df: pd.DataFrame) -> pd.DataFrame:
@@ -517,7 +637,28 @@ def build_app(df: pd.DataFrame, contract: dict | None = None, host: str = "127.0
 
             dcc.Store(id="df_store"),
 
-            html.Div(id="kpi_tiles"),
+            # ===== LANDING SECTION (Above the Fold) =====
+            html.Div(
+                [
+                    html.H3("Cash Movement Summary", style={"marginBottom": "12px", "marginTop": "16px"}),
+                    html.Div(id="kpi_tiles"),
+                ],
+                style={"marginBottom": "16px"},
+            ),
+
+            # Waterfall + Drivers side by side
+            html.Div(
+                [
+                    html.Div([dcc.Graph(id="waterfall_chart", style={"height": "360px"})], style={"width": "54%", "display": "inline-block", "verticalAlign": "top"}),
+                    html.Div([dcc.Graph(id="drivers_chart", style={"height": "360px"})], style={"width": "44%", "display": "inline-block", "marginLeft": "2%", "verticalAlign": "top"}),
+                ],
+                style={"marginBottom": "20px"},
+            ),
+
+            html.Hr(style={"margin": "24px 0", "borderColor": "#ddd"}),
+
+            # ===== DETAILED ANALYSIS (Below the Fold) =====
+            html.H3("Detailed Analysis", style={"marginBottom": "12px"}),
 
             html.Div(
                 [
@@ -541,7 +682,10 @@ def build_app(df: pd.DataFrame, contract: dict | None = None, host: str = "127.0
                 style={"marginTop": "10px"},
             ),
 
-            html.H3("Transactions"),
+            html.Hr(style={"margin": "24px 0", "borderColor": "#ddd"}),
+
+            # ===== AUDIT SECTION (Below the Fold) =====
+            html.H3("Audit Trail"),
             dash_table.DataTable(
                 id="tx_table",
                 page_size=25,
@@ -648,6 +792,8 @@ def build_app(df: pd.DataFrame, contract: dict | None = None, host: str = "127.0
     # ---------- charts + KPIs ----------
     @app.callback(
         Output("kpi_tiles", "children"),
+        Output("waterfall_chart", "figure"),
+        Output("drivers_chart", "figure"),
         Output("net_cashflow_line", "figure"),
         Output("income_stack", "figure"),
         Output("spend_stack", "figure"),
@@ -670,6 +816,32 @@ def build_app(df: pd.DataFrame, contract: dict | None = None, host: str = "127.0
 
         monthly = compute_monthly_kpis(monthly_source)
 
+        # ===== LANDING KPIs: 4 tiles per spec =====
+        # Filter to cash movement sections (exclude TRANSFER, NON-CASH)
+        cash_movement_df = monthly_source[monthly_source["Cashflow_Section"].isin(["OPERATING", "INVESTING", "FINANCING"])].copy()
+
+        operating_net = float(cash_movement_df[cash_movement_df["Cashflow_Section"] == "OPERATING"]["Amount"].sum())
+        investing_net = float(cash_movement_df[cash_movement_df["Cashflow_Section"] == "INVESTING"]["Amount"].sum())
+        financing_net = float(cash_movement_df[cash_movement_df["Cashflow_Section"] == "FINANCING"]["Amount"].sum())
+        net_cash_movement = operating_net + investing_net + financing_net
+
+        # Determine if empty period
+        is_empty = cash_movement_df.empty
+
+        tiles = [
+            _kpi_tile("Net Cash Movement", net_cash_movement, subtitle="(No transactions)" if is_empty else "", color_by_sign=True),
+            _kpi_tile("Operating Cash", operating_net, subtitle="Income minus operating expenses", color_by_sign=True),
+            _kpi_tile("Investing Cash", investing_net, subtitle="", color_by_sign=True),
+            _kpi_tile("Financing Cash", financing_net, subtitle="Includes CC settlements", color_by_sign=True),
+        ]
+
+        # ===== WATERFALL CHART =====
+        fig_waterfall = _build_waterfall_figure(operating_net, investing_net, financing_net)
+
+        # ===== DRIVERS CHART (Top 5 Category_L2 by magnitude) =====
+        fig_drivers = _build_drivers_figure(cash_movement_df, top_n=5)
+
+        # ===== DETAILED ANALYSIS CHARTS (Below the fold) =====
         total_income = float(monthly_source[(monthly_source["Cashflow_Section"] == "OPERATING") & (monthly_source["Amount"] > 0)]["Amount"].sum())
 
         # Spend lens: optionally include CC settlement proxy outflows
@@ -679,26 +851,6 @@ def build_app(df: pd.DataFrame, contract: dict | None = None, host: str = "127.0
         elif spend_mode == "INCLUDE_CC_PROXY" and "Is_CC_Settlement" in monthly_source.columns:
             cc = monthly_source[(monthly_source["Is_CC_Settlement"].fillna(False)) & (monthly_source["Amount"] < 0)].copy()
             sp_base = pd.concat([sp_base, cc], ignore_index=False)
-
-        total_spend = float(sp_base["Amount"].sum())  # negative
-        net_operating = total_income + total_spend
-        inv = float(monthly_source[monthly_source["Cashflow_Section"] == "INVESTING"]["Amount"].sum())
-        fin = float(monthly_source[monthly_source["Cashflow_Section"] == "FINANCING"]["Amount"].sum())
-        net = float(monthly_source["Amount"].sum())
-
-        cc_proxy_abs = 0.0
-        if "Is_CC_Settlement" in monthly_source.columns:
-            cc_proxy_abs = float(abs(monthly_source[monthly_source["Is_CC_Settlement"].fillna(False) == True]["Amount"].sum()))
-
-        tiles = [
-            _kpi_tile("Operating Income", total_income),
-            _kpi_tile(f"Operating Spend (abs) [{spend_mode}]", abs(total_spend)),
-            _kpi_tile("CC Settlement Proxy (abs)", cc_proxy_abs),
-            _kpi_tile("Operating Net", net_operating),
-            _kpi_tile("Investing Net (signed)", inv),
-            _kpi_tile("Financing Net (signed)", fin),
-            _kpi_tile("Net Cashflow (signed)", net),
-        ]
 
         fig_net = px.line(monthly, x="YearMonth", y="Net_Cashflow", markers=True, title=f"Net Cashflow by Month (signed) [{cash_lens}]")
         fig_net.update_layout(font=dict(family=FIG_FONT, size=12))
@@ -736,7 +888,7 @@ def build_app(df: pd.DataFrame, contract: dict | None = None, host: str = "127.0
             fig_rec = px.bar(rec, x="avg_abs", y="label", orientation="h", title="Recurring candidates (avg abs outflow)")
         fig_rec.update_layout(font=dict(family=FIG_FONT, size=12))
 
-        return tiles, fig_net, fig_inc, fig_sp, fig_drill, fig_rec
+        return tiles, fig_waterfall, fig_drivers, fig_net, fig_inc, fig_sp, fig_drill, fig_rec
 
     # ---------- transaction table ----------
     @app.callback(
@@ -775,8 +927,20 @@ def main():
     df_raw = pd.read_csv(input_csv)
 
     contract = validate_contract(df_raw)
+
+    # Hard block: missing required fields
     if contract.get("missing_required"):
-        raise ValueError(f"Data contract failure: missing required fields {contract.get('missing_required')}")
+        raise ValueError(
+            f"Data contract failure: missing required fields {contract.get('missing_required')}. "
+            "FP&A semantic correctness requires explicit section classification."
+        )
+
+    # Hard block: unrecognized Cashflow_Section values
+    if contract.get("invalid_cashflow_sections"):
+        raise ValueError(
+            f"Data contract failure: unrecognized Cashflow_Section values {contract.get('invalid_cashflow_sections')}. "
+            f"Valid values: {sorted(_VALID_CASHFLOW_SECTIONS)}"
+        )
 
     df = harmonize_schema(df_raw)
 
