@@ -1,0 +1,7 @@
+Metric,Value,Note
+Overrides_Available,True,
+Total_Overrides_Enabled,4,Count of Enabled=TRUE rows in overrides.xlsx
+Transactions_Overridden,0,Count where Was_Overridden=True in classified data
+Override_Pct,0.00%,Percentage of filtered transactions that were overridden
+Top_Override_Magnets,None,No overridden transactions found
+Note_Original_Rule,Not Available,Cannot infer original Rule_ID before override. All Rule_ID values reflect current (post-override) classification.
