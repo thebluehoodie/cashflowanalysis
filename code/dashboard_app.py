@@ -75,6 +75,145 @@ time, mark, audio, video,
 input, textarea, select, button {{
   font-family: {FONT_STACK} !important;
 }}
+
+/* Responsive Shell Layout */
+.app-shell {{
+  display: flex;
+  gap: 0;
+  height: calc(100vh - 70px);
+}}
+
+.sidebar {{
+  width: 320px;
+  min-width: 320px;
+  padding: 20px;
+  background-color: {COLORS["bg_primary"]};
+  border-right: 1px solid {COLORS["border"]};
+  overflow-y: auto;
+  flex-shrink: 0;
+}}
+
+.main-content {{
+  flex: 1;
+  padding: 24px;
+  overflow-y: auto;
+  background-color: {COLORS["bg_secondary"]};
+}}
+
+/* Page Container */
+.page {{
+  max-width: 1600px;
+  margin: 0 auto;
+  padding: 0 16px;
+}}
+
+/* Card Styles */
+.card {{
+  background-color: {COLORS["bg_primary"]};
+  border: 1px solid {COLORS["border"]};
+  border-radius: 8px;
+  padding: 16px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+}}
+
+.card-chart {{
+  background-color: {COLORS["bg_primary"]};
+  border: 1px solid {COLORS["border"]};
+  border-radius: 8px;
+  padding: 12px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+}}
+
+/* KPI Grid */
+.kpi-grid {{
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+}}
+
+.kpi-tile {{
+  padding: 16px 20px;
+  border: 1px solid {COLORS["border"]};
+  border-radius: 8px;
+  background-color: {COLORS["bg_primary"]};
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+}}
+
+/* Chart Row Grid */
+.chart-row {{
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 24px;
+  margin-bottom: 24px;
+}}
+
+.chart-full {{
+  margin-bottom: 24px;
+}}
+
+/* Section Heading */
+.section-heading {{
+  font-size: 16px;
+  font-weight: 600;
+  color: {COLORS["dark_text"]};
+  margin-bottom: 12px;
+  margin-top: 0;
+}}
+
+/* Filter Section */
+.filter-section {{
+  margin-bottom: 20px;
+}}
+
+.filter-label {{
+  font-weight: 600;
+  color: {COLORS["dark_text"]};
+  font-size: 12px;
+  margin-bottom: 6px;
+  display: block;
+}}
+
+/* Mobile Responsive */
+@media (max-width: 1100px) {{
+  .app-shell {{
+    flex-direction: column;
+    height: auto;
+  }}
+
+  .sidebar {{
+    width: 100%;
+    min-width: 100%;
+    border-right: none;
+    border-bottom: 1px solid {COLORS["border"]};
+    max-height: 400px;
+  }}
+
+  .main-content {{
+    padding: 16px;
+  }}
+
+  .chart-row {{
+    grid-template-columns: 1fr;
+  }}
+
+  .kpi-grid {{
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  }}
+}}
+
+@media (max-width: 768px) {{
+  .kpi-grid {{
+    grid-template-columns: 1fr;
+  }}
+
+  .sidebar {{
+    padding: 16px;
+  }}
+
+  .main-content {{
+    padding: 12px;
+  }}
+}}
 """
 
 def load_env_file() -> None:
@@ -399,18 +538,7 @@ def _kpi_tile(
 
     return html.Div(
         children,
-        style={
-            "display": "inline-block",
-            "padding": "16px 20px",
-            "border": f"1px solid {COLORS['border']}",
-            "borderRadius": "8px",
-            "marginRight": "16px",
-            "marginBottom": "12px",
-            "minWidth": "200px",
-            "verticalAlign": "top",
-            "backgroundColor": COLORS["bg_primary"],
-            "boxShadow": "0 1px 3px rgba(0,0,0,0.08)",
-        },
+        className="kpi-tile",
     )
 
 
@@ -462,7 +590,7 @@ def _executive_kpi_strip(
                 prior_value=prior_financing,
                 color_by_sign=True,
             ),
-        ]),
+        ], className="kpi-grid"),
     ], style={
         "backgroundColor": COLORS["bg_secondary"],
         "padding": "20px 24px",
@@ -963,14 +1091,7 @@ def build_app(df: pd.DataFrame, contract: dict | None = None, host: str = "127.0
                         dcc.Slider(id="topn", min=5, max=50, step=5, value=15, marks={5: "5", 25: "25", 50: "50"}),
                     ]),
 
-                ], style={
-                    "width": "220px",
-                    "padding": "16px",
-                    "backgroundColor": COLORS["bg_primary"],
-                    "borderRight": f"1px solid {COLORS['border']}",
-                    "overflowY": "auto",
-                    "flexShrink": "0",
-                }),
+                ], className="sidebar"),
 
                 # ===== MAIN DASHBOARD AREA =====
                 html.Div([
@@ -979,107 +1100,78 @@ def build_app(df: pd.DataFrame, contract: dict | None = None, host: str = "127.0
 
                     # ===== CHARTS ROW 1: Waterfall + Drivers =====
                     html.Div([
-                        html.Div([dcc.Graph(id="waterfall_chart", style={"height": "380px"})], style={
-                            "width": "48%",
-                            "display": "inline-block",
-                            "verticalAlign": "top",
-                            "backgroundColor": COLORS["bg_primary"],
-                            "borderRadius": "8px",
-                            "padding": "8px",
-                            "boxShadow": "0 1px 3px rgba(0,0,0,0.08)",
-                        }),
-                        html.Div([dcc.Graph(id="drivers_chart", style={"height": "380px"})], style={
-                            "width": "48%",
-                            "display": "inline-block",
-                            "marginLeft": "4%",
-                            "verticalAlign": "top",
-                            "backgroundColor": COLORS["bg_primary"],
-                            "borderRadius": "8px",
-                            "padding": "8px",
-                            "boxShadow": "0 1px 3px rgba(0,0,0,0.08)",
-                        }),
-                    ], style={"marginBottom": "24px"}),
+                        html.Div([
+                            dcc.Graph(
+                                id="waterfall_chart",
+                                style={"height": "380px", "width": "100%"},
+                                config={"responsive": True},
+                            )
+                        ], className="card-chart"),
+                        html.Div([
+                            dcc.Graph(
+                                id="drivers_chart",
+                                style={"height": "380px", "width": "100%"},
+                                config={"responsive": True},
+                            )
+                        ], className="card-chart"),
+                    ], className="chart-row"),
 
                     # ===== VARIANCE ANALYSIS (NEW - for comparison mode) =====
                     html.Div(id="variance_section", style={"marginBottom": "24px"}),
 
                     # ===== TREND LINE =====
                     html.Div([
-                        html.H3("Monthly Trend", style={
-                            "fontSize": "16px",
-                            "fontWeight": "600",
-                            "color": COLORS["dark_text"],
-                            "marginBottom": "12px",
-                        }),
-                        html.Div([dcc.Graph(id="net_cashflow_line", style={"height": "300px"})], style={
-                            "backgroundColor": COLORS["bg_primary"],
-                            "borderRadius": "8px",
-                            "padding": "8px",
-                            "boxShadow": "0 1px 3px rgba(0,0,0,0.08)",
-                        }),
-                    ], style={"marginBottom": "24px"}),
+                        html.H3("Monthly Trend", className="section-heading"),
+                        html.Div([
+                            dcc.Graph(
+                                id="net_cashflow_line",
+                                style={"height": "300px", "width": "100%"},
+                                config={"responsive": True},
+                            )
+                        ], className="card-chart"),
+                    ], className="chart-full"),
 
                     # ===== DETAILED CHARTS =====
                     html.Div([
-                        html.H3("Income & Spend Breakdown", style={
-                            "fontSize": "16px",
-                            "fontWeight": "600",
-                            "color": COLORS["dark_text"],
-                            "marginBottom": "12px",
-                        }),
+                        html.H3("Income & Spend Breakdown", className="section-heading"),
                         html.Div([
-                            html.Div([dcc.Graph(id="income_stack", style={"height": "320px"})], style={
-                                "width": "48%",
-                                "display": "inline-block",
-                                "verticalAlign": "top",
-                                "backgroundColor": COLORS["bg_primary"],
-                                "borderRadius": "8px",
-                                "padding": "8px",
-                                "boxShadow": "0 1px 3px rgba(0,0,0,0.08)",
-                            }),
-                            html.Div([dcc.Graph(id="spend_stack", style={"height": "320px"})], style={
-                                "width": "48%",
-                                "display": "inline-block",
-                                "marginLeft": "4%",
-                                "verticalAlign": "top",
-                                "backgroundColor": COLORS["bg_primary"],
-                                "borderRadius": "8px",
-                                "padding": "8px",
-                                "boxShadow": "0 1px 3px rgba(0,0,0,0.08)",
-                            }),
-                        ]),
-                    ], style={"marginBottom": "24px"}),
+                            html.Div([
+                                dcc.Graph(
+                                    id="income_stack",
+                                    style={"height": "320px", "width": "100%"},
+                                    config={"responsive": True},
+                                )
+                            ], className="card-chart"),
+                            html.Div([
+                                dcc.Graph(
+                                    id="spend_stack",
+                                    style={"height": "320px", "width": "100%"},
+                                    config={"responsive": True},
+                                )
+                            ], className="card-chart"),
+                        ], className="chart-row"),
+                    ], className="chart-full"),
 
                     html.Div([
-                        html.Div([dcc.Graph(id="drill_bar", style={"height": "320px"})], style={
-                            "width": "48%",
-                            "display": "inline-block",
-                            "verticalAlign": "top",
-                            "backgroundColor": COLORS["bg_primary"],
-                            "borderRadius": "8px",
-                            "padding": "8px",
-                            "boxShadow": "0 1px 3px rgba(0,0,0,0.08)",
-                        }),
-                        html.Div([dcc.Graph(id="recurring_bar", style={"height": "320px"})], style={
-                            "width": "48%",
-                            "display": "inline-block",
-                            "marginLeft": "4%",
-                            "verticalAlign": "top",
-                            "backgroundColor": COLORS["bg_primary"],
-                            "borderRadius": "8px",
-                            "padding": "8px",
-                            "boxShadow": "0 1px 3px rgba(0,0,0,0.08)",
-                        }),
-                    ], style={"marginBottom": "24px"}),
+                        html.Div([
+                            dcc.Graph(
+                                id="drill_bar",
+                                style={"height": "320px", "width": "100%"},
+                                config={"responsive": True},
+                            )
+                        ], className="card-chart"),
+                        html.Div([
+                            dcc.Graph(
+                                id="recurring_bar",
+                                style={"height": "320px", "width": "100%"},
+                                config={"responsive": True},
+                            )
+                        ], className="card-chart"),
+                    ], className="chart-row"),
 
                     # ===== AUDIT TRAIL =====
                     html.Div([
-                        html.H3("Audit Trail", style={
-                            "fontSize": "16px",
-                            "fontWeight": "600",
-                            "color": COLORS["dark_text"],
-                            "marginBottom": "12px",
-                        }),
+                        html.H3("Audit Trail", className="section-heading"),
                         html.Div([
                             dash_table.DataTable(
                                 id="tx_table",
@@ -1102,24 +1194,12 @@ def build_app(df: pd.DataFrame, contract: dict | None = None, host: str = "127.0
                                     {"if": {"row_index": "odd"}, "backgroundColor": COLORS["bg_secondary"]},
                                 ],
                             ),
-                        ], style={
-                            "backgroundColor": COLORS["bg_primary"],
-                            "borderRadius": "8px",
-                            "padding": "12px",
-                            "boxShadow": "0 1px 3px rgba(0,0,0,0.08)",
-                        }),
+                        ], className="card"),
                     ]),
 
-                ], style={
-                    "flex": "1",
-                    "padding": "24px",
-                    "overflowY": "auto",
-                }),
+                ], className="main-content"),
 
-            ], style={
-                "display": "flex",
-                "height": "calc(100vh - 70px)",
-            }),
+            ], className="app-shell"),
         ],
         style={
             "fontFamily": FONT_STACK,
@@ -1293,19 +1373,18 @@ def build_app(df: pd.DataFrame, contract: dict | None = None, host: str = "127.0
                 # Build variance section
                 comparison_labels = {"MoM": "Prior Month", "QoQ": "Prior Quarter", "YoY": "Prior Year"}
                 variance_section = html.Div([
-                    html.H3(f"Variance Analysis vs {comparison_labels.get(comparison_mode, 'Prior Period')}", style={
-                        "fontSize": "16px",
-                        "fontWeight": "600",
-                        "color": COLORS["dark_text"],
-                        "marginBottom": "12px",
-                    }),
-                    html.Div([dcc.Graph(figure=fig_variance, style={"height": "350px"})], style={
-                        "backgroundColor": COLORS["bg_primary"],
-                        "borderRadius": "8px",
-                        "padding": "8px",
-                        "boxShadow": "0 1px 3px rgba(0,0,0,0.08)",
-                    }),
-                ])
+                    html.H3(
+                        f"Variance Analysis vs {comparison_labels.get(comparison_mode, 'Prior Period')}",
+                        className="section-heading",
+                    ),
+                    html.Div([
+                        dcc.Graph(
+                            figure=fig_variance,
+                            style={"height": "350px", "width": "100%"},
+                            config={"responsive": True},
+                        )
+                    ], className="card-chart"),
+                ], className="chart-full")
 
         # ===== BUILD KPI STRIP =====
         period_label = f"{ym_start} to {ym_end}" if ym_start and ym_end else "Selected Period"
