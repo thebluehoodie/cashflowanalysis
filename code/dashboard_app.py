@@ -36,12 +36,28 @@ from dash import Dash, Input, Output, State, dcc, html, dash_table
 
 
 # ======================================================
-# SETTINGS
+# SETTINGS (McKinsey-style FP&A palette)
 # ======================================================
 
 FONT_STACK = "Inter, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif"
 FIG_FONT = FONT_STACK
 INTER_STYLESHEET = "https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"
+
+# McKinsey-inspired color palette
+COLORS = {
+    "primary_blue": "#004990",      # McKinsey blue
+    "secondary_blue": "#0067a5",    # Lighter blue
+    "accent_teal": "#00838f",       # Teal accent
+    "positive_green": "#16a34a",    # Positive variance
+    "negative_red": "#dc2626",      # Negative variance
+    "neutral_gray": "#64748b",      # Neutral text
+    "dark_text": "#1e293b",         # Primary text
+    "light_text": "#94a3b8",        # Secondary text
+    "bg_primary": "#ffffff",        # Primary background
+    "bg_secondary": "#f8fafc",      # Secondary background
+    "border": "#e2e8f0",            # Borders
+    "header_bg": "#004990",         # Header background
+}
 GLOBAL_CSS = f"""
 html, body, div, span, applet, object, iframe,
 h1, h2, h3, h4, h5, h6, p, blockquote, pre,
@@ -299,42 +315,294 @@ def harmonize_schema(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ======================================================
-# KPI + Analytics helpers
+# KPI + Analytics helpers (McKinsey-style)
 # ======================================================
 
-def _kpi_tile(label: str, value: float, subtitle: str = "", color_by_sign: bool = False) -> html.Div:
-    """KPI tile with optional subtitle and sign-based coloring."""
-    if color_by_sign:
-        color = "#16a34a" if value >= 0 else "#dc2626"  # green / red
+def _format_currency(value: float, show_sign: bool = False) -> str:
+    """Format currency value with optional sign prefix."""
+    if show_sign and value > 0:
+        return f"+${value:,.0f}"
+    elif value < 0:
+        return f"-${abs(value):,.0f}"
     else:
-        color = "#111"
+        return f"${value:,.0f}"
+
+
+def _format_delta_pct(current: float, prior: float) -> Tuple[str, str]:
+    """Calculate and format percentage change. Returns (formatted_string, color)."""
+    if prior == 0:
+        if current == 0:
+            return "—", COLORS["neutral_gray"]
+        return "N/A", COLORS["neutral_gray"]
+
+    pct_change = ((current - prior) / abs(prior)) * 100
+
+    if pct_change > 0:
+        return f"+{pct_change:.1f}%", COLORS["positive_green"]
+    elif pct_change < 0:
+        return f"{pct_change:.1f}%", COLORS["negative_red"]
+    else:
+        return "0.0%", COLORS["neutral_gray"]
+
+
+def _kpi_tile(
+    label: str,
+    value: float,
+    subtitle: str = "",
+    color_by_sign: bool = False,
+    prior_value: float = None,
+    show_delta: bool = True,
+) -> html.Div:
+    """Enhanced KPI tile with optional delta indicator (McKinsey-style)."""
+    if color_by_sign:
+        value_color = COLORS["positive_green"] if value >= 0 else COLORS["negative_red"]
+    else:
+        value_color = COLORS["dark_text"]
 
     children = [
-        html.Div(label, style={"fontSize": "12px", "color": "#666", "fontWeight": "500"}),
-        html.Div(f"{value:,.2f}", style={"fontSize": "22px", "fontWeight": "700", "color": color}),
+        html.Div(label, style={
+            "fontSize": "11px",
+            "color": COLORS["neutral_gray"],
+            "fontWeight": "600",
+            "textTransform": "uppercase",
+            "letterSpacing": "0.5px",
+            "marginBottom": "4px",
+        }),
+        html.Div(_format_currency(value), style={
+            "fontSize": "28px",
+            "fontWeight": "700",
+            "color": value_color,
+            "lineHeight": "1.1",
+        }),
     ]
+
+    # Add delta indicator if prior value provided
+    if prior_value is not None and show_delta:
+        delta = value - prior_value
+        delta_pct_str, delta_color = _format_delta_pct(value, prior_value)
+        delta_str = _format_currency(delta, show_sign=True)
+
+        children.append(
+            html.Div([
+                html.Span(delta_str, style={"color": delta_color, "fontWeight": "600"}),
+                html.Span(f" ({delta_pct_str})", style={"color": delta_color, "fontWeight": "500"}),
+            ], style={"fontSize": "12px", "marginTop": "4px"})
+        )
+
     if subtitle:
-        children.append(html.Div(subtitle, style={"fontSize": "11px", "color": "#888", "marginTop": "2px"}))
+        children.append(html.Div(subtitle, style={
+            "fontSize": "10px",
+            "color": COLORS["light_text"],
+            "marginTop": "6px",
+            "fontStyle": "italic",
+        }))
 
     return html.Div(
         children,
         style={
             "display": "inline-block",
-            "padding": "12px 16px",
-            "border": "1px solid #ddd",
+            "padding": "16px 20px",
+            "border": f"1px solid {COLORS['border']}",
             "borderRadius": "8px",
-            "marginRight": "12px",
-            "marginBottom": "10px",
-            "minWidth": "180px",
+            "marginRight": "16px",
+            "marginBottom": "12px",
+            "minWidth": "200px",
             "verticalAlign": "top",
-            "backgroundColor": "#fff",
-            "boxShadow": "0 1px 3px rgba(0,0,0,0.05)",
+            "backgroundColor": COLORS["bg_primary"],
+            "boxShadow": "0 1px 3px rgba(0,0,0,0.08)",
         },
     )
 
 
+def _executive_kpi_strip(
+    net_cash: float,
+    operating: float,
+    investing: float,
+    financing: float,
+    prior_net: float = None,
+    prior_operating: float = None,
+    prior_investing: float = None,
+    prior_financing: float = None,
+    period_label: str = "Selected Period",
+) -> html.Div:
+    """Build executive KPI strip with 4 primary metrics (McKinsey-style)."""
+    return html.Div([
+        html.Div([
+            html.Span(period_label, style={
+                "fontSize": "14px",
+                "fontWeight": "600",
+                "color": COLORS["dark_text"],
+            }),
+        ], style={"marginBottom": "12px"}),
+        html.Div([
+            _kpi_tile(
+                "Net Cash Movement",
+                net_cash,
+                prior_value=prior_net,
+                color_by_sign=True,
+            ),
+            _kpi_tile(
+                "Operating Cash",
+                operating,
+                subtitle="Income minus expenses",
+                prior_value=prior_operating,
+                color_by_sign=True,
+            ),
+            _kpi_tile(
+                "Investing Cash",
+                investing,
+                subtitle="Capex, savings, investments",
+                prior_value=prior_investing,
+                color_by_sign=True,
+            ),
+            _kpi_tile(
+                "Financing Cash",
+                financing,
+                subtitle="Debt service, CC settlements",
+                prior_value=prior_financing,
+                color_by_sign=True,
+            ),
+        ]),
+    ], style={
+        "backgroundColor": COLORS["bg_secondary"],
+        "padding": "20px 24px",
+        "borderRadius": "12px",
+        "marginBottom": "24px",
+        "border": f"1px solid {COLORS['border']}",
+    })
+
+
+# ======================================================
+# FP&A Analytics: Period Comparison
+# ======================================================
+
+def compute_period_metrics(df: pd.DataFrame, yearmonths: List[str]) -> dict:
+    """Compute aggregate metrics for a list of yearmonths."""
+    d = df[df["YearMonth"].isin(yearmonths)].copy()
+
+    # Filter to cash movement sections
+    cash_df = d[d["Cashflow_Section"].isin(["OPERATING", "INVESTING", "FINANCING"])]
+
+    operating = float(cash_df[cash_df["Cashflow_Section"] == "OPERATING"]["Amount"].sum())
+    investing = float(cash_df[cash_df["Cashflow_Section"] == "INVESTING"]["Amount"].sum())
+    financing = float(cash_df[cash_df["Cashflow_Section"] == "FINANCING"]["Amount"].sum())
+    net_cash = operating + investing + financing
+
+    # Operating breakdown
+    op_income = float(d[(d["Cashflow_Section"] == "OPERATING") & (d["Amount"] > 0)]["Amount"].sum())
+    op_expense = float(d[(d["Cashflow_Section"] == "OPERATING") & (d["Amount"] < 0)]["Amount"].sum())
+
+    return {
+        "net_cash": net_cash,
+        "operating": operating,
+        "investing": investing,
+        "financing": financing,
+        "op_income": op_income,
+        "op_expense": op_expense,
+        "txn_count": len(d),
+    }
+
+
+def get_prior_period_months(current_months: List[str], comparison_type: str) -> List[str]:
+    """
+    Get prior period months for comparison.
+
+    comparison_type: 'MoM', 'QoQ', 'YoY'
+    """
+    if not current_months:
+        return []
+
+    # Parse months
+    current_dates = [pd.Timestamp(m + "-01") for m in current_months]
+
+    if comparison_type == "MoM":
+        # Prior month(s) - same number of months, shifted back by 1
+        offset = pd.DateOffset(months=1)
+    elif comparison_type == "QoQ":
+        # Prior quarter - same number of months, shifted back by 3
+        offset = pd.DateOffset(months=3)
+    elif comparison_type == "YoY":
+        # Prior year - same number of months, shifted back by 12
+        offset = pd.DateOffset(months=12)
+    else:
+        return []
+
+    prior_dates = [d - offset for d in current_dates]
+    return [d.strftime("%Y-%m") for d in prior_dates]
+
+
+def compute_variance_drivers(
+    current_df: pd.DataFrame,
+    prior_df: pd.DataFrame,
+    group_by: str = "Category_L2",
+    top_n: int = 10,
+) -> pd.DataFrame:
+    """
+    Compute variance drivers between two periods.
+    Returns top contributors to the change in net cashflow.
+    """
+    # Aggregate by group
+    current_agg = current_df.groupby(group_by)["Amount"].sum().reset_index()
+    current_agg.columns = [group_by, "Current"]
+
+    prior_agg = prior_df.groupby(group_by)["Amount"].sum().reset_index()
+    prior_agg.columns = [group_by, "Prior"]
+
+    # Merge
+    merged = pd.merge(current_agg, prior_agg, on=group_by, how="outer").fillna(0)
+    merged["Variance"] = merged["Current"] - merged["Prior"]
+    merged["Abs_Variance"] = merged["Variance"].abs()
+
+    # Sort by absolute variance
+    merged = merged.sort_values("Abs_Variance", ascending=False).head(top_n)
+
+    return merged
+
+
+def _build_variance_bridge_figure(variance_df: pd.DataFrame, group_by: str = "Category_L2") -> go.Figure:
+    """Build variance bridge chart showing what's driving the change."""
+    if variance_df.empty:
+        fig = go.Figure()
+        fig.update_layout(
+            title="Variance Analysis",
+            annotations=[dict(text="No data for comparison", x=0.5, y=0.5, showarrow=False)],
+            font=dict(family=FIG_FONT, size=12),
+        )
+        return fig
+
+    # Sort for display (largest at top)
+    df = variance_df.sort_values("Abs_Variance", ascending=True)
+
+    colors = [COLORS["positive_green"] if v >= 0 else COLORS["negative_red"] for v in df["Variance"]]
+
+    fig = go.Figure(go.Bar(
+        x=df["Variance"],
+        y=df[group_by],
+        orientation="h",
+        marker_color=colors,
+        text=[f"{v:+,.0f}" for v in df["Variance"]],
+        textposition="outside",
+    ))
+
+    fig.update_layout(
+        title="Variance Drivers (Current vs Prior Period)",
+        font=dict(family=FIG_FONT, size=12),
+        margin=dict(t=50, b=40, l=150, r=50),
+        xaxis_title="Variance (Current - Prior)",
+        yaxis_title="",
+        showlegend=False,
+        plot_bgcolor=COLORS["bg_primary"],
+        paper_bgcolor=COLORS["bg_primary"],
+    )
+
+    fig.update_xaxes(gridcolor=COLORS["border"], zerolinecolor=COLORS["neutral_gray"])
+    fig.update_yaxes(gridcolor=COLORS["border"])
+
+    return fig
+
+
 def _build_waterfall_figure(operating_net: float, investing_net: float, financing_net: float) -> go.Figure:
-    """Build a waterfall chart for cashflow sections."""
+    """Build a waterfall chart for cashflow sections (McKinsey-style)."""
     net_cash = operating_net + investing_net + financing_net
 
     # Waterfall data: measure types are 'relative' for intermediate, 'total' for final
@@ -342,23 +610,31 @@ def _build_waterfall_figure(operating_net: float, investing_net: float, financin
         name="Cashflow",
         orientation="v",
         measure=["relative", "relative", "relative", "total"],
-        x=["Operating Net", "Investing Net", "Financing Net", "Net Cash Movement"],
+        x=["Operating", "Investing", "Financing", "Net Cash"],
         y=[operating_net, investing_net, financing_net, net_cash],
         textposition="outside",
-        text=[f"{operating_net:,.0f}", f"{investing_net:,.0f}", f"{financing_net:,.0f}", f"{net_cash:,.0f}"],
-        connector={"line": {"color": "#888", "width": 1}},
-        increasing={"marker": {"color": "#16a34a"}},  # green
-        decreasing={"marker": {"color": "#dc2626"}},  # red
-        totals={"marker": {"color": "#2563eb" if net_cash >= 0 else "#dc2626"}},  # blue or red
+        text=[f"${v:,.0f}" for v in [operating_net, investing_net, financing_net, net_cash]],
+        connector={"line": {"color": COLORS["neutral_gray"], "width": 1, "dash": "dot"}},
+        increasing={"marker": {"color": COLORS["positive_green"]}},
+        decreasing={"marker": {"color": COLORS["negative_red"]}},
+        totals={"marker": {"color": COLORS["primary_blue"] if net_cash >= 0 else COLORS["negative_red"]}},
     ))
 
     fig.update_layout(
-        title="Cashflow Waterfall",
+        title=dict(
+            text="Cash Flow Bridge",
+            font=dict(size=16, color=COLORS["dark_text"]),
+        ),
         showlegend=False,
-        font=dict(family=FIG_FONT, size=12),
-        margin=dict(t=50, b=40, l=50, r=30),
-        yaxis_title="Amount",
+        font=dict(family=FIG_FONT, size=12, color=COLORS["dark_text"]),
+        margin=dict(t=60, b=40, l=60, r=30),
+        yaxis_title="Amount ($)",
+        plot_bgcolor=COLORS["bg_primary"],
+        paper_bgcolor=COLORS["bg_primary"],
     )
+
+    fig.update_xaxes(gridcolor=COLORS["border"])
+    fig.update_yaxes(gridcolor=COLORS["border"], tickformat="$,.0f")
 
     return fig
 
@@ -374,9 +650,11 @@ def _build_drivers_figure(df: pd.DataFrame, top_n: int = 5) -> go.Figure:
     if d.empty:
         fig = go.Figure()
         fig.update_layout(
-            title="Largest cash movements (by magnitude)",
+            title=dict(text="Top Cash Movements", font=dict(size=16, color=COLORS["dark_text"])),
             annotations=[dict(text="No transactions in this period", x=0.5, y=0.5, showarrow=False)],
             font=dict(family=FIG_FONT, size=12),
+            plot_bgcolor=COLORS["bg_primary"],
+            paper_bgcolor=COLORS["bg_primary"],
         )
         return fig
 
@@ -389,25 +667,30 @@ def _build_drivers_figure(df: pd.DataFrame, top_n: int = 5) -> go.Figure:
     agg = agg.sort_values("AbsAmount", ascending=True)
 
     # Color by sign
-    colors = ["#16a34a" if v >= 0 else "#dc2626" for v in agg["Amount"]]
+    colors = [COLORS["positive_green"] if v >= 0 else COLORS["negative_red"] for v in agg["Amount"]]
 
     fig = go.Figure(go.Bar(
         x=agg["Amount"],
         y=agg["Category_L2"],
         orientation="h",
         marker_color=colors,
-        text=[f"{v:+,.0f}" for v in agg["Amount"]],
+        text=[f"${v:+,.0f}" for v in agg["Amount"]],
         textposition="outside",
     ))
 
     fig.update_layout(
-        title="Largest cash movements (by magnitude)",
-        font=dict(family=FIG_FONT, size=12),
-        margin=dict(t=50, b=40, l=150, r=50),
-        xaxis_title="Amount (signed)",
+        title=dict(text="Top Cash Movements", font=dict(size=16, color=COLORS["dark_text"])),
+        font=dict(family=FIG_FONT, size=12, color=COLORS["dark_text"]),
+        margin=dict(t=60, b=40, l=150, r=60),
+        xaxis_title="Amount ($)",
         yaxis_title="",
         showlegend=False,
+        plot_bgcolor=COLORS["bg_primary"],
+        paper_bgcolor=COLORS["bg_primary"],
     )
+
+    fig.update_xaxes(gridcolor=COLORS["border"], tickformat="$,.0f")
+    fig.update_yaxes(gridcolor=COLORS["border"])
 
     return fig
 
@@ -497,208 +780,353 @@ def build_app(df: pd.DataFrame, contract: dict | None = None, host: str = "127.0
     app.layout = html.Div(
         [
             dcc.Markdown(f"<style>{GLOBAL_CSS}</style>", dangerously_allow_html=True),
-            html.H2("Personal Cashflow FP&A Dashboard"),
 
-            html.Div(id="contract_banner", style={"marginBottom": "10px"}),
+            # ===== EXECUTIVE HEADER (McKinsey-style) =====
+            html.Div([
+                html.Div([
+                    html.H1("Personal Cash Flow Dashboard", style={
+                        "color": COLORS["bg_primary"],
+                        "fontSize": "24px",
+                        "fontWeight": "700",
+                        "margin": "0",
+                    }),
+                    html.Div("FP&A Analytics • Audit-Grade Classification", style={
+                        "color": COLORS["light_text"],
+                        "fontSize": "12px",
+                        "marginTop": "4px",
+                    }),
+                ], style={"flex": "1"}),
+            ], style={
+                "backgroundColor": COLORS["header_bg"],
+                "padding": "16px 24px",
+                "display": "flex",
+                "alignItems": "center",
+                "marginBottom": "0",
+            }),
+
+            html.Div(id="contract_banner", style={"marginBottom": "0"}),
             dcc.Store(id="contract_store", data=contract or {}),
+            dcc.Store(id="df_store"),
 
-            html.Div(
-                [
-                    html.Div(
-                        [
-                            html.Label("YearMonth Start"),
+            # ===== MAIN CONTENT =====
+            html.Div([
+                # ===== FILTER PANEL (Collapsible sidebar feel) =====
+                html.Div([
+                    # Period Selection
+                    html.Div([
+                        html.Label("Period", style={"fontWeight": "600", "color": COLORS["dark_text"], "fontSize": "12px", "marginBottom": "6px"}),
+                        html.Div([
                             dcc.Dropdown(
                                 id="ym_start",
                                 options=[{"label": x, "value": x} for x in ym_options],
                                 value=min_ym,
                                 clearable=False,
+                                style={"fontSize": "12px"},
                             ),
-                            html.Label("YearMonth End", style={"marginTop": "8px"}),
+                            html.Span("to", style={"margin": "0 8px", "color": COLORS["neutral_gray"]}),
                             dcc.Dropdown(
                                 id="ym_end",
                                 options=[{"label": x, "value": x} for x in ym_options],
                                 value=max_ym,
                                 clearable=False,
+                                style={"fontSize": "12px"},
                             ),
-                        ],
-                        style={"width": "18%", "display": "inline-block", "verticalAlign": "top"},
-                    ),
+                        ], style={"display": "flex", "alignItems": "center"}),
+                    ], style={"marginBottom": "16px"}),
 
-                    html.Div(
-                        [
-                            html.Label("Cashflow Section"),
-                            dcc.Dropdown(
-                                id="section_filter",
-                                options=[{"label": s, "value": s} for s in section_options],
-                                value=["OPERATING", "INVESTING", "FINANCING"],
-                                multi=True,
-                            ),
-                            dcc.Checklist(
-                                id="exclude_transfers",
-                                options=[{"label": "Exclude Transfers", "value": "EX"}],
-                                value=["EX"],
-                                style={"marginTop": "8px"},
-                            ),
-                            dcc.Checklist(
-                                id="exclude_summary",
-                                options=[{"label": "Exclude Balance B/F (Summary)", "value": "SUM"}],
-                                value=["SUM"],
-                                style={"marginTop": "4px"},
-                            ),
+                    # Comparison Mode (NEW)
+                    html.Div([
+                        html.Label("Compare vs", style={"fontWeight": "600", "color": COLORS["dark_text"], "fontSize": "12px", "marginBottom": "6px"}),
+                        dcc.RadioItems(
+                            id="comparison_mode",
+                            options=[
+                                {"label": "None", "value": "NONE"},
+                                {"label": "Prior Month (MoM)", "value": "MoM"},
+                                {"label": "Prior Quarter (QoQ)", "value": "QoQ"},
+                                {"label": "Prior Year (YoY)", "value": "YoY"},
+                            ],
+                            value="NONE",
+                            labelStyle={"display": "block", "fontSize": "11px", "marginBottom": "4px"},
+                        ),
+                    ], style={"marginBottom": "16px"}),
 
-                            html.Label("Cash Lens", style={"marginTop": "10px"}),
-                            dcc.RadioItems(
-                                id="cash_lens",
-                                options=[
-                                    {"label": "Net Economic (exclude transfers from net)", "value": "NET_ECONOMIC"},
-                                    {"label": "Gross Movement (include transfers)", "value": "GROSS_MOVEMENT"},
+                    # Cashflow Sections
+                    html.Div([
+                        html.Label("Sections", style={"fontWeight": "600", "color": COLORS["dark_text"], "fontSize": "12px", "marginBottom": "6px"}),
+                        dcc.Dropdown(
+                            id="section_filter",
+                            options=[{"label": s, "value": s} for s in section_options],
+                            value=["OPERATING", "INVESTING", "FINANCING"],
+                            multi=True,
+                            style={"fontSize": "11px"},
+                        ),
+                        dcc.Checklist(
+                            id="exclude_transfers",
+                            options=[{"label": "Exclude Transfers", "value": "EX"}],
+                            value=["EX"],
+                            style={"marginTop": "6px", "fontSize": "11px"},
+                        ),
+                        dcc.Checklist(
+                            id="exclude_summary",
+                            options=[{"label": "Exclude Balance B/F", "value": "SUM"}],
+                            value=["SUM"],
+                            style={"marginTop": "4px", "fontSize": "11px"},
+                        ),
+                    ], style={"marginBottom": "16px"}),
+
+                    # View Options
+                    html.Div([
+                        html.Label("View Options", style={"fontWeight": "600", "color": COLORS["dark_text"], "fontSize": "12px", "marginBottom": "6px"}),
+                        dcc.RadioItems(
+                            id="cash_lens",
+                            options=[
+                                {"label": "Net Economic", "value": "NET_ECONOMIC"},
+                                {"label": "Gross Movement", "value": "GROSS_MOVEMENT"},
+                            ],
+                            value="NET_ECONOMIC",
+                            labelStyle={"display": "block", "fontSize": "11px", "marginBottom": "2px"},
+                        ),
+                        dcc.RadioItems(
+                            id="spend_mode",
+                            options=[
+                                {"label": "Direct Spend", "value": "DIRECT"},
+                                {"label": "Include CC Proxy", "value": "INCLUDE_CC_PROXY"},
+                            ],
+                            value="DIRECT",
+                            labelStyle={"display": "block", "fontSize": "11px", "marginBottom": "2px"},
+                            style={"marginTop": "8px"},
+                        ),
+                        dcc.RadioItems(
+                            id="baseline_mode",
+                            options=[
+                                {"label": "All Transactions", "value": "ALL"},
+                                {"label": "Baseline Only", "value": "BASELINE_ONLY"},
+                            ],
+                            value="ALL",
+                            labelStyle={"display": "block", "fontSize": "11px", "marginBottom": "2px"},
+                            style={"marginTop": "8px"},
+                        ),
+                        dcc.Checklist(
+                            id="include_non_cash",
+                            options=[{"label": "Include NON-CASH", "value": "NC"}],
+                            value=[],
+                            style={"marginTop": "6px", "fontSize": "11px"},
+                        ),
+                    ], style={"marginBottom": "16px"}),
+
+                    # Category Filters
+                    html.Div([
+                        html.Label("Categories", style={"fontWeight": "600", "color": COLORS["dark_text"], "fontSize": "12px", "marginBottom": "6px"}),
+                        dcc.Dropdown(
+                            id="cat1_filter",
+                            options=[{"label": c, "value": c} for c in cat1_options],
+                            value=[],
+                            multi=True,
+                            placeholder="Category L1...",
+                            style={"fontSize": "11px", "marginBottom": "6px"},
+                        ),
+                        dcc.Dropdown(
+                            id="cat2_filter",
+                            options=[{"label": c, "value": c} for c in cat2_options],
+                            value=[],
+                            multi=True,
+                            placeholder="Category L2...",
+                            style={"fontSize": "11px"},
+                        ),
+                    ], style={"marginBottom": "16px"}),
+
+                    # Search
+                    html.Div([
+                        html.Label("Search", style={"fontWeight": "600", "color": COLORS["dark_text"], "fontSize": "12px", "marginBottom": "6px"}),
+                        dcc.Input(
+                            id="search_text",
+                            type="text",
+                            placeholder="Description contains...",
+                            style={"width": "100%", "fontSize": "11px", "padding": "6px"},
+                        ),
+                    ], style={"marginBottom": "16px"}),
+
+                    # Drilldown Options
+                    html.Div([
+                        html.Label("Drilldown", style={"fontWeight": "600", "color": COLORS["dark_text"], "fontSize": "12px", "marginBottom": "6px"}),
+                        dcc.RadioItems(
+                            id="drill_mode",
+                            options=[
+                                {"label": "Category L2", "value": "Category_L2"},
+                                {"label": "Counterparty", "value": "Counterparty_Core"},
+                                {"label": "Instrument", "value": "Instrument"},
+                            ],
+                            value="Category_L2",
+                            labelStyle={"display": "block", "fontSize": "11px", "marginBottom": "2px"},
+                        ),
+                        html.Label("Top N", style={"marginTop": "8px", "fontSize": "11px", "color": COLORS["neutral_gray"]}),
+                        dcc.Slider(id="topn", min=5, max=50, step=5, value=15, marks={5: "5", 25: "25", 50: "50"}),
+                    ]),
+
+                ], style={
+                    "width": "220px",
+                    "padding": "16px",
+                    "backgroundColor": COLORS["bg_primary"],
+                    "borderRight": f"1px solid {COLORS['border']}",
+                    "overflowY": "auto",
+                    "flexShrink": "0",
+                }),
+
+                # ===== MAIN DASHBOARD AREA =====
+                html.Div([
+                    # ===== EXECUTIVE KPI STRIP =====
+                    html.Div(id="kpi_tiles", style={"marginBottom": "24px"}),
+
+                    # ===== CHARTS ROW 1: Waterfall + Drivers =====
+                    html.Div([
+                        html.Div([dcc.Graph(id="waterfall_chart", style={"height": "380px"})], style={
+                            "width": "48%",
+                            "display": "inline-block",
+                            "verticalAlign": "top",
+                            "backgroundColor": COLORS["bg_primary"],
+                            "borderRadius": "8px",
+                            "padding": "8px",
+                            "boxShadow": "0 1px 3px rgba(0,0,0,0.08)",
+                        }),
+                        html.Div([dcc.Graph(id="drivers_chart", style={"height": "380px"})], style={
+                            "width": "48%",
+                            "display": "inline-block",
+                            "marginLeft": "4%",
+                            "verticalAlign": "top",
+                            "backgroundColor": COLORS["bg_primary"],
+                            "borderRadius": "8px",
+                            "padding": "8px",
+                            "boxShadow": "0 1px 3px rgba(0,0,0,0.08)",
+                        }),
+                    ], style={"marginBottom": "24px"}),
+
+                    # ===== VARIANCE ANALYSIS (NEW - for comparison mode) =====
+                    html.Div(id="variance_section", style={"marginBottom": "24px"}),
+
+                    # ===== TREND LINE =====
+                    html.Div([
+                        html.H3("Monthly Trend", style={
+                            "fontSize": "16px",
+                            "fontWeight": "600",
+                            "color": COLORS["dark_text"],
+                            "marginBottom": "12px",
+                        }),
+                        html.Div([dcc.Graph(id="net_cashflow_line", style={"height": "300px"})], style={
+                            "backgroundColor": COLORS["bg_primary"],
+                            "borderRadius": "8px",
+                            "padding": "8px",
+                            "boxShadow": "0 1px 3px rgba(0,0,0,0.08)",
+                        }),
+                    ], style={"marginBottom": "24px"}),
+
+                    # ===== DETAILED CHARTS =====
+                    html.Div([
+                        html.H3("Income & Spend Breakdown", style={
+                            "fontSize": "16px",
+                            "fontWeight": "600",
+                            "color": COLORS["dark_text"],
+                            "marginBottom": "12px",
+                        }),
+                        html.Div([
+                            html.Div([dcc.Graph(id="income_stack", style={"height": "320px"})], style={
+                                "width": "48%",
+                                "display": "inline-block",
+                                "verticalAlign": "top",
+                                "backgroundColor": COLORS["bg_primary"],
+                                "borderRadius": "8px",
+                                "padding": "8px",
+                                "boxShadow": "0 1px 3px rgba(0,0,0,0.08)",
+                            }),
+                            html.Div([dcc.Graph(id="spend_stack", style={"height": "320px"})], style={
+                                "width": "48%",
+                                "display": "inline-block",
+                                "marginLeft": "4%",
+                                "verticalAlign": "top",
+                                "backgroundColor": COLORS["bg_primary"],
+                                "borderRadius": "8px",
+                                "padding": "8px",
+                                "boxShadow": "0 1px 3px rgba(0,0,0,0.08)",
+                            }),
+                        ]),
+                    ], style={"marginBottom": "24px"}),
+
+                    html.Div([
+                        html.Div([dcc.Graph(id="drill_bar", style={"height": "320px"})], style={
+                            "width": "48%",
+                            "display": "inline-block",
+                            "verticalAlign": "top",
+                            "backgroundColor": COLORS["bg_primary"],
+                            "borderRadius": "8px",
+                            "padding": "8px",
+                            "boxShadow": "0 1px 3px rgba(0,0,0,0.08)",
+                        }),
+                        html.Div([dcc.Graph(id="recurring_bar", style={"height": "320px"})], style={
+                            "width": "48%",
+                            "display": "inline-block",
+                            "marginLeft": "4%",
+                            "verticalAlign": "top",
+                            "backgroundColor": COLORS["bg_primary"],
+                            "borderRadius": "8px",
+                            "padding": "8px",
+                            "boxShadow": "0 1px 3px rgba(0,0,0,0.08)",
+                        }),
+                    ], style={"marginBottom": "24px"}),
+
+                    # ===== AUDIT TRAIL =====
+                    html.Div([
+                        html.H3("Audit Trail", style={
+                            "fontSize": "16px",
+                            "fontWeight": "600",
+                            "color": COLORS["dark_text"],
+                            "marginBottom": "12px",
+                        }),
+                        html.Div([
+                            dash_table.DataTable(
+                                id="tx_table",
+                                page_size=25,
+                                sort_action="native",
+                                filter_action="native",
+                                style_table={"overflowX": "auto"},
+                                style_cell={
+                                    "fontFamily": FONT_STACK,
+                                    "fontSize": "11px",
+                                    "padding": "8px",
+                                    "textAlign": "left",
+                                },
+                                style_header={
+                                    "fontWeight": "600",
+                                    "backgroundColor": COLORS["bg_secondary"],
+                                    "borderBottom": f"2px solid {COLORS['border']}",
+                                },
+                                style_data_conditional=[
+                                    {"if": {"row_index": "odd"}, "backgroundColor": COLORS["bg_secondary"]},
                                 ],
-                                value="NET_ECONOMIC",
-                                labelStyle={"display": "block"},
                             ),
-                            html.Label("Spend Lens", style={"marginTop": "10px"}),
-                            dcc.RadioItems(
-                                id="spend_mode",
-                                options=[
-                                    {"label": "Direct Spend (exclude CC settlement)", "value": "DIRECT"},
-                                    {"label": "Include CC Settlement Proxy", "value": "INCLUDE_CC_PROXY"},
-                                ],
-                                value="DIRECT",
-                                labelStyle={"display": "block"},
-                            ),
-                            html.Label("Baseline Mode", style={"marginTop": "10px"}),
-                            dcc.RadioItems(
-                                id="baseline_mode",
-                                options=[
-                                    {"label": "All Transactions", "value": "ALL"},
-                                    {"label": "Baseline Only (Baseline_Eligible=True)", "value": "BASELINE_ONLY"},
-                                ],
-                                value="ALL",
-                                labelStyle={"display": "block"},
-                            ),
-                            dcc.Checklist(
-                                id="include_non_cash",
-                                options=[{"label": "Include NON-CASH section", "value": "NC"}],
-                                value=[],
-                                style={"marginTop": "6px"},
-                            ),
-                        ],
-                        style={"width": "22%", "display": "inline-block", "marginLeft": "2%", "verticalAlign": "top"},
-                    ),
+                        ], style={
+                            "backgroundColor": COLORS["bg_primary"],
+                            "borderRadius": "8px",
+                            "padding": "12px",
+                            "boxShadow": "0 1px 3px rgba(0,0,0,0.08)",
+                        }),
+                    ]),
 
-                    html.Div(
-                        [
-                            html.Label("Category L1"),
-                            dcc.Dropdown(
-                                id="cat1_filter",
-                                options=[{"label": c, "value": c} for c in cat1_options],
-                                value=[],
-                                multi=True,
-                            ),
-                            html.Label("Category L2", style={"marginTop": "8px"}),
-                            dcc.Dropdown(
-                                id="cat2_filter",
-                                options=[{"label": c, "value": c} for c in cat2_options],
-                                value=[],
-                                multi=True,
-                            ),
-                            html.Label("Search (Description / Counterparty)", style={"marginTop": "8px"}),
-                            dcc.Input(
-                                id="search_text",
-                                type="text",
-                                placeholder="contains...",
-                                style={"width": "100%"},
-                            ),
-                        ],
-                        style={"width": "34%", "display": "inline-block", "marginLeft": "2%", "verticalAlign": "top"},
-                    ),
+                ], style={
+                    "flex": "1",
+                    "padding": "24px",
+                    "overflowY": "auto",
+                }),
 
-                    html.Div(
-                        [
-                            html.Label("Drilldown"),
-                            dcc.RadioItems(
-                                id="drill_mode",
-                                options=[
-                                    {"label": "Category_L2", "value": "Category_L2"},
-                                    {"label": "Counterparty_Core", "value": "Counterparty_Core"},
-                                    {"label": "Instrument", "value": "Instrument"},
-                                ],
-                                value="Category_L2",
-                                labelStyle={"display": "block"},
-                            ),
-                            html.Label("Top N", style={"marginTop": "8px"}),
-                            dcc.Slider(id="topn", min=5, max=50, step=5, value=15),
-                        ],
-                        style={"width": "18%", "display": "inline-block", "marginLeft": "2%", "verticalAlign": "top"},
-                    ),
-                ],
-                style={"padding": "8px 0"},
-            ),
-
-            dcc.Store(id="df_store"),
-
-            # ===== LANDING SECTION (Above the Fold) =====
-            html.Div(
-                [
-                    html.H3("Cash Movement Summary", style={"marginBottom": "12px", "marginTop": "16px"}),
-                    html.Div(id="kpi_tiles"),
-                ],
-                style={"marginBottom": "16px"},
-            ),
-
-            # Waterfall + Drivers side by side
-            html.Div(
-                [
-                    html.Div([dcc.Graph(id="waterfall_chart", style={"height": "360px"})], style={"width": "54%", "display": "inline-block", "verticalAlign": "top"}),
-                    html.Div([dcc.Graph(id="drivers_chart", style={"height": "360px"})], style={"width": "44%", "display": "inline-block", "marginLeft": "2%", "verticalAlign": "top"}),
-                ],
-                style={"marginBottom": "20px"},
-            ),
-
-            html.Hr(style={"margin": "24px 0", "borderColor": "#ddd"}),
-
-            # ===== DETAILED ANALYSIS (Below the Fold) =====
-            html.H3("Detailed Analysis", style={"marginBottom": "12px"}),
-
-            html.Div(
-                [
-                    dcc.Graph(id="net_cashflow_line", style={"height": "320px"}),
-                ]
-            ),
-
-            html.Div(
-                [
-                    html.Div([dcc.Graph(id="income_stack")], style={"width": "49%", "display": "inline-block"}),
-                    html.Div([dcc.Graph(id="spend_stack")], style={"width": "49%", "display": "inline-block", "marginLeft": "2%"}),
-                ],
-                style={"marginTop": "10px"},
-            ),
-
-            html.Div(
-                [
-                    html.Div([dcc.Graph(id="drill_bar")], style={"width": "49%", "display": "inline-block"}),
-                    html.Div([dcc.Graph(id="recurring_bar")], style={"width": "49%", "display": "inline-block", "marginLeft": "2%"}),
-                ],
-                style={"marginTop": "10px"},
-            ),
-
-            html.Hr(style={"margin": "24px 0", "borderColor": "#ddd"}),
-
-            # ===== AUDIT SECTION (Below the Fold) =====
-            html.H3("Audit Trail"),
-            dash_table.DataTable(
-                id="tx_table",
-                page_size=25,
-                sort_action="native",
-                filter_action="native",
-                style_table={"overflowX": "auto"},
-                style_cell={"fontFamily": FONT_STACK, "fontSize": "12px", "padding": "6px"},
-                style_header={"fontWeight": "600"},
-            ),
+            ], style={
+                "display": "flex",
+                "height": "calc(100vh - 70px)",
+            }),
         ],
         style={
-            "fontFamily": "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif",
-            "backgroundColor": "#f7f7f7",
+            "fontFamily": FONT_STACK,
+            "backgroundColor": COLORS["bg_secondary"],
+            "margin": "0",
+            "padding": "0",
+            "minHeight": "100vh",
         },
     )
 
@@ -792,6 +1220,7 @@ def build_app(df: pd.DataFrame, contract: dict | None = None, host: str = "127.0
     # ---------- charts + KPIs ----------
     @app.callback(
         Output("kpi_tiles", "children"),
+        Output("variance_section", "children"),
         Output("waterfall_chart", "figure"),
         Output("drivers_chart", "figure"),
         Output("net_cashflow_line", "figure"),
@@ -804,8 +1233,11 @@ def build_app(df: pd.DataFrame, contract: dict | None = None, host: str = "127.0
         Input("topn", "value"),
         Input("cash_lens", "value"),
         Input("spend_mode", "value"),
+        Input("comparison_mode", "value"),
+        Input("ym_start", "value"),
+        Input("ym_end", "value"),
     )
-    def refresh_views(djson, drill_mode, topn, cash_lens, spend_mode):
+    def refresh_views(djson, drill_mode, topn, cash_lens, spend_mode, comparison_mode, ym_start, ym_end):
         d = pd.read_json(StringIO(djson), orient="split") if djson else df.copy()
 
         monthly_source = d.copy()
@@ -816,8 +1248,7 @@ def build_app(df: pd.DataFrame, contract: dict | None = None, host: str = "127.0
 
         monthly = compute_monthly_kpis(monthly_source)
 
-        # ===== LANDING KPIs: 4 tiles per spec =====
-        # Filter to cash movement sections (exclude TRANSFER, NON-CASH)
+        # ===== CURRENT PERIOD METRICS =====
         cash_movement_df = monthly_source[monthly_source["Cashflow_Section"].isin(["OPERATING", "INVESTING", "FINANCING"])].copy()
 
         operating_net = float(cash_movement_df[cash_movement_df["Cashflow_Section"] == "OPERATING"]["Amount"].sum())
@@ -825,15 +1256,70 @@ def build_app(df: pd.DataFrame, contract: dict | None = None, host: str = "127.0
         financing_net = float(cash_movement_df[cash_movement_df["Cashflow_Section"] == "FINANCING"]["Amount"].sum())
         net_cash_movement = operating_net + investing_net + financing_net
 
-        # Determine if empty period
-        is_empty = cash_movement_df.empty
+        # ===== PRIOR PERIOD METRICS (if comparison mode enabled) =====
+        prior_operating = None
+        prior_investing = None
+        prior_financing = None
+        prior_net = None
+        variance_section = None
 
-        tiles = [
-            _kpi_tile("Net Cash Movement", net_cash_movement, subtitle="(No transactions)" if is_empty else "", color_by_sign=True),
-            _kpi_tile("Operating Cash", operating_net, subtitle="Income minus operating expenses", color_by_sign=True),
-            _kpi_tile("Investing Cash", investing_net, subtitle="", color_by_sign=True),
-            _kpi_tile("Financing Cash", financing_net, subtitle="Includes CC settlements", color_by_sign=True),
-        ]
+        if comparison_mode and comparison_mode != "NONE" and ym_start and ym_end:
+            # Get current period months
+            current_months = sorted([
+                ym for ym in monthly_source["YearMonth"].unique()
+                if ym and ym != "NaT"
+            ])
+
+            # Get prior period months
+            prior_months = get_prior_period_months(current_months, comparison_mode)
+
+            # Compute prior period metrics from FULL dataset (before filtering)
+            prior_df = df[df["YearMonth"].isin(prior_months)].copy()
+            if cash_lens == "NET_ECONOMIC" and "Is_TransferSection" in prior_df.columns:
+                prior_df = prior_df[~prior_df["Is_TransferSection"]].copy()
+
+            prior_cash_df = prior_df[prior_df["Cashflow_Section"].isin(["OPERATING", "INVESTING", "FINANCING"])]
+
+            if not prior_cash_df.empty:
+                prior_operating = float(prior_cash_df[prior_cash_df["Cashflow_Section"] == "OPERATING"]["Amount"].sum())
+                prior_investing = float(prior_cash_df[prior_cash_df["Cashflow_Section"] == "INVESTING"]["Amount"].sum())
+                prior_financing = float(prior_cash_df[prior_cash_df["Cashflow_Section"] == "FINANCING"]["Amount"].sum())
+                prior_net = prior_operating + prior_investing + prior_financing
+
+                # Build variance drivers
+                variance_drivers = compute_variance_drivers(cash_movement_df, prior_cash_df, "Category_L2", 10)
+                fig_variance = _build_variance_bridge_figure(variance_drivers, "Category_L2")
+
+                # Build variance section
+                comparison_labels = {"MoM": "Prior Month", "QoQ": "Prior Quarter", "YoY": "Prior Year"}
+                variance_section = html.Div([
+                    html.H3(f"Variance Analysis vs {comparison_labels.get(comparison_mode, 'Prior Period')}", style={
+                        "fontSize": "16px",
+                        "fontWeight": "600",
+                        "color": COLORS["dark_text"],
+                        "marginBottom": "12px",
+                    }),
+                    html.Div([dcc.Graph(figure=fig_variance, style={"height": "350px"})], style={
+                        "backgroundColor": COLORS["bg_primary"],
+                        "borderRadius": "8px",
+                        "padding": "8px",
+                        "boxShadow": "0 1px 3px rgba(0,0,0,0.08)",
+                    }),
+                ])
+
+        # ===== BUILD KPI STRIP =====
+        period_label = f"{ym_start} to {ym_end}" if ym_start and ym_end else "Selected Period"
+        kpi_strip = _executive_kpi_strip(
+            net_cash=net_cash_movement,
+            operating=operating_net,
+            investing=investing_net,
+            financing=financing_net,
+            prior_net=prior_net,
+            prior_operating=prior_operating,
+            prior_investing=prior_investing,
+            prior_financing=prior_financing,
+            period_label=period_label,
+        )
 
         # ===== WATERFALL CHART =====
         fig_waterfall = _build_waterfall_figure(operating_net, investing_net, financing_net)
@@ -842,7 +1328,6 @@ def build_app(df: pd.DataFrame, contract: dict | None = None, host: str = "127.0
         fig_drivers = _build_drivers_figure(cash_movement_df, top_n=5)
 
         # ===== DETAILED ANALYSIS CHARTS (Below the fold) =====
-        total_income = float(monthly_source[(monthly_source["Cashflow_Section"] == "OPERATING") & (monthly_source["Amount"] > 0)]["Amount"].sum())
 
         # Spend lens: optionally include CC settlement proxy outflows
         sp_base = monthly_source[(monthly_source["Cashflow_Section"] == "OPERATING") & (monthly_source["Amount"] < 0)].copy()
@@ -852,30 +1337,74 @@ def build_app(df: pd.DataFrame, contract: dict | None = None, host: str = "127.0
             cc = monthly_source[(monthly_source["Is_CC_Settlement"].fillna(False)) & (monthly_source["Amount"] < 0)].copy()
             sp_base = pd.concat([sp_base, cc], ignore_index=False)
 
-        fig_net = px.line(monthly, x="YearMonth", y="Net_Cashflow", markers=True, title=f"Net Cashflow by Month (signed) [{cash_lens}]")
-        fig_net.update_layout(font=dict(family=FIG_FONT, size=12))
+        # Net cashflow line chart (improved styling)
+        fig_net = px.line(monthly, x="YearMonth", y="Net_Cashflow", markers=True)
+        fig_net.update_traces(
+            line=dict(color=COLORS["primary_blue"], width=2),
+            marker=dict(size=8, color=COLORS["primary_blue"]),
+        )
+        fig_net.update_layout(
+            title=dict(text="Net Cash Flow Trend", font=dict(size=14, color=COLORS["dark_text"])),
+            font=dict(family=FIG_FONT, size=12, color=COLORS["dark_text"]),
+            plot_bgcolor=COLORS["bg_primary"],
+            paper_bgcolor=COLORS["bg_primary"],
+            xaxis_title="Month",
+            yaxis_title="Net Cash Flow ($)",
+        )
+        fig_net.update_xaxes(gridcolor=COLORS["border"])
+        fig_net.update_yaxes(gridcolor=COLORS["border"], tickformat="$,.0f")
 
+        # Income chart
         inc = monthly_source[(monthly_source["Cashflow_Section"] == "OPERATING") & (monthly_source["Amount"] > 0)]
         if inc.empty:
             fig_inc = px.bar(title="Operating Income (no data)")
         else:
             inc_g = inc.groupby(["YearMonth", "Category_L2"])["Amount"].sum().reset_index()
-            fig_inc = px.bar(inc_g, x="YearMonth", y="Amount", color="Category_L2", title="Operating Income by Category_L2")
-        fig_inc.update_layout(font=dict(family=FIG_FONT, size=12))
+            fig_inc = px.bar(inc_g, x="YearMonth", y="Amount", color="Category_L2")
+            fig_inc.update_layout(
+                title=dict(text="Operating Income", font=dict(size=14, color=COLORS["dark_text"])),
+            )
+        fig_inc.update_layout(
+            font=dict(family=FIG_FONT, size=12, color=COLORS["dark_text"]),
+            plot_bgcolor=COLORS["bg_primary"],
+            paper_bgcolor=COLORS["bg_primary"],
+        )
+        fig_inc.update_xaxes(gridcolor=COLORS["border"])
+        fig_inc.update_yaxes(gridcolor=COLORS["border"], tickformat="$,.0f")
 
+        # Spend chart
         sp = sp_base.copy()
         if sp.empty:
             fig_sp = px.bar(title="Operating Spend (no data)")
         else:
             sp_g = sp.groupby(["YearMonth", "Category_L2"])["AbsAmount"].sum().reset_index()
-            fig_sp = px.bar(sp_g, x="YearMonth", y="AbsAmount", color="Category_L2", title=f"Operating Spend by Category_L2 (abs) [{spend_mode}]")
-        fig_sp.update_layout(font=dict(family=FIG_FONT, size=12))
+            fig_sp = px.bar(sp_g, x="YearMonth", y="AbsAmount", color="Category_L2")
+            fig_sp.update_layout(
+                title=dict(text=f"Operating Spend [{spend_mode}]", font=dict(size=14, color=COLORS["dark_text"])),
+            )
+        fig_sp.update_layout(
+            font=dict(family=FIG_FONT, size=12, color=COLORS["dark_text"]),
+            plot_bgcolor=COLORS["bg_primary"],
+            paper_bgcolor=COLORS["bg_primary"],
+        )
+        fig_sp.update_xaxes(gridcolor=COLORS["border"])
+        fig_sp.update_yaxes(gridcolor=COLORS["border"], tickformat="$,.0f")
 
+        # Drilldown chart
         drill_col = drill_mode if drill_mode in d.columns else "Category_L2"
         g = d.groupby(drill_col)["AbsAmount"].sum().reset_index().sort_values("AbsAmount", ascending=False).head(int(topn))
-        fig_drill = px.bar(g, x="AbsAmount", y=drill_col, orientation="h", title=f"Top {topn} by Abs Amount ({drill_col})")
-        fig_drill.update_layout(font=dict(family=FIG_FONT, size=12))
+        fig_drill = px.bar(g, x="AbsAmount", y=drill_col, orientation="h")
+        fig_drill.update_layout(
+            title=dict(text=f"Top {topn} by Amount ({drill_col})", font=dict(size=14, color=COLORS["dark_text"])),
+            font=dict(family=FIG_FONT, size=12, color=COLORS["dark_text"]),
+            plot_bgcolor=COLORS["bg_primary"],
+            paper_bgcolor=COLORS["bg_primary"],
+        )
+        fig_drill.update_traces(marker_color=COLORS["primary_blue"])
+        fig_drill.update_xaxes(gridcolor=COLORS["border"], tickformat="$,.0f")
+        fig_drill.update_yaxes(gridcolor=COLORS["border"])
 
+        # Recurring candidates chart
         rec = recurring_candidates(d, min_months=6).head(25).copy()
         if rec.empty:
             fig_rec = px.bar(title="Recurring candidates (no data)")
@@ -885,10 +1414,20 @@ def build_app(df: pd.DataFrame, contract: dict | None = None, host: str = "127.0
                 + " | m=" + rec["months_present"].astype(int).astype(str)
                 + " | cov=" + rec["cov"].fillna(np.nan).round(2).astype(str)
             )
-            fig_rec = px.bar(rec, x="avg_abs", y="label", orientation="h", title="Recurring candidates (avg abs outflow)")
-        fig_rec.update_layout(font=dict(family=FIG_FONT, size=12))
+            fig_rec = px.bar(rec, x="avg_abs", y="label", orientation="h")
+            fig_rec.update_traces(marker_color=COLORS["accent_teal"])
+        fig_rec.update_layout(
+            title=dict(text="Recurring Expenses", font=dict(size=14, color=COLORS["dark_text"])),
+            font=dict(family=FIG_FONT, size=12, color=COLORS["dark_text"]),
+            plot_bgcolor=COLORS["bg_primary"],
+            paper_bgcolor=COLORS["bg_primary"],
+            xaxis_title="Avg Monthly Amount ($)",
+            yaxis_title="",
+        )
+        fig_rec.update_xaxes(gridcolor=COLORS["border"], tickformat="$,.0f")
+        fig_rec.update_yaxes(gridcolor=COLORS["border"])
 
-        return tiles, fig_waterfall, fig_drivers, fig_net, fig_inc, fig_sp, fig_drill, fig_rec
+        return kpi_strip, variance_section, fig_waterfall, fig_drivers, fig_net, fig_inc, fig_sp, fig_drill, fig_rec
 
     # ---------- transaction table ----------
     @app.callback(

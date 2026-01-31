@@ -1,0 +1,228 @@
+# PROGRESS.md - FP&A Cashflow Classification Pipeline Improvements
+
+## Iteration 1 — Classification Correctness (R17+ Rules)
+
+### Date: 2026-01-31
+
+### Summary
+Added 7 new classification rules (R17-R23) to reduce fallback pressure on R14_OTHER_INCOME and R15_GENERIC_OUTFLOW.
+
+### Diagnostic Baseline (Before)
+From `diagnostics/fallback_pressure_report.csv`:
+
+| Rule | Txn_Count | Dollar_Value | Pct_of_Direction | Severity |
+|------|-----------|--------------|------------------|----------|
+| R14_OTHER_INCOME | 52 | $371,189.11 | 15.74% | WARNING |
+| R15_GENERIC_OUTFLOW | 302 | $603,406.45 | 26.19% | OK |
+
+### New Rules Implemented
+
+| Rule_ID | Pattern | Section | Expected Impact |
+|---------|---------|---------|-----------------|
+| R17_SRS_CONTRIBUTION | `SRS CONT`, `(SRS)` | INVESTING | ~$122k, 10 txns |
+| R18_CPF_VOLUNTARY | `CENTRAL PROVIDENT FU` | INVESTING | ~$80k, 9 txns |
+| R19_TOWN_COUNCIL | `TOWNCOUNCIL` | OPERATING | ~$1.5k, 30 txns |
+| R20_GOVT_PAYOUT | `GOVT PAYOUT`, `GOV GOV` | OPERATING | ~$1.9k, 8 txns |
+| R21_ATM_WITHDRAWAL | `CASH WITHDRAWAL`, `ATM` | OPERATING | ~$5k, 40 txns |
+| R22_TELECOM | `SINGTEL`, `STARHUB`, `M1` | OPERATING | ~$115, 2 txns |
+| R23_TRANSIT | `TRANSIT`, `SMRT` | OPERATING | ~$230, 5 txns |
+
+### Expected Impact (After)
+
+**R15_GENERIC_OUTFLOW reduction:**
+- SRS contributions: -$122,400 (10 txns)
+- CPF voluntary: -$80,000 (9 txns)
+- Town Council: -$1,500 (30 txns)
+- ATM withdrawals: -$5,080 (40 txns)
+- Telecom: -$115 (2 txns)
+- Transit: -$230 (5 txns)
+- **Total reduction: ~$209,325 (96 txns)**
+- **Expected new R15 percentage: ~17% (down from 26%)**
+
+**R14_OTHER_INCOME reduction:**
+- Government payouts: -$1,850 (8 txns)
+- **Expected new R14 percentage: ~14% (down from 16%)**
+
+### Verification Commands Run
+```bash
+RUN_SELF_CHECKS=1 python auto_classify_transactions.py
+# Output: R17+ rule tests passed. Self-checks passed.
+```
+
+### Files Modified
+- `code/auto_classify_transactions.py`
+  - Added pattern definitions (lines 180-234)
+  - Added compiled patterns (lines 604-611)
+  - Added classify_row() rules (lines 927-1069)
+  - Updated MANAGERIAL_DERIVE_MAP (lines 105-112)
+  - Added test cases to _self_check() (lines 1471-1515)
+
+### Semantic Decisions
+
+1. **SRS/CPF → INVESTING**: Retirement contributions are capital allocation, not operating expenses
+2. **Town Council → HOUSING/OPERATING**: Recurring housing-related municipal charges
+3. **Government Payouts → INCOME (non-baseline)**: Variable government grants, not structural income
+4. **ATM Withdrawal → LIFESTYLE (non-baseline)**: Cash-based discretionary spending
+5. **Telecom/Transit → LIFESTYLE (baseline)**: Recurring structural expenses
+
+---
+
+## Iteration 2 — Dashboard UI (McKinsey-style)
+
+### Date: 2026-01-31
+
+### Summary
+Redesigned dashboard with McKinsey-style FP&A layout, added period comparison (MoM/QoQ/YoY), and variance driver analysis.
+
+### Changes Implemented
+
+#### 1. Color Palette (McKinsey-inspired)
+```python
+COLORS = {
+    "primary_blue": "#004990",      # McKinsey blue
+    "secondary_blue": "#0067a5",    # Lighter blue
+    "accent_teal": "#00838f",       # Teal accent
+    "positive_green": "#16a34a",    # Positive variance
+    "negative_red": "#dc2626",      # Negative variance
+    ...
+}
+```
+
+#### 2. Executive Header
+- Professional header bar with McKinsey blue background
+- Clear title: "Personal Cash Flow Dashboard"
+- Subtitle: "FP&A Analytics • Audit-Grade Classification"
+
+#### 3. Comparison Mode Selector (NEW)
+- None (default)
+- MoM (Prior Month)
+- QoQ (Prior Quarter)
+- YoY (Prior Year)
+
+#### 4. Enhanced KPI Strip
+- Executive-style KPI tiles with:
+  - Primary metric value
+  - Delta vs prior period (absolute and %)
+  - Contextual subtitles
+  - Sign-based color coding
+
+#### 5. Variance Driver Analysis (NEW)
+- Horizontal bar chart showing top 10 Category_L2 by variance
+- Appears when comparison mode is enabled
+- Shows what's driving the change between periods
+
+#### 6. Improved Layout
+- Sidebar filter panel (220px fixed width)
+- Main dashboard area with proper visual hierarchy
+- Card-based chart containers with shadows
+- Consistent spacing and typography
+
+#### 7. Chart Styling Improvements
+- All charts use consistent color palette
+- Professional chart backgrounds
+- Improved tick formatting ($,.0f for currency)
+- Cleaner grid lines
+
+### New Functions Added
+```python
+# Period comparison analytics
+compute_period_metrics(df, yearmonths) -> dict
+get_prior_period_months(current_months, comparison_type) -> List[str]
+compute_variance_drivers(current_df, prior_df, group_by, top_n) -> DataFrame
+_build_variance_bridge_figure(variance_df, group_by) -> Figure
+
+# Enhanced KPI components
+_format_currency(value, show_sign) -> str
+_format_delta_pct(current, prior) -> Tuple[str, str]
+_executive_kpi_strip(...) -> html.Div
+```
+
+### Verification
+```bash
+python -m py_compile dashboard_app.py
+# Output: Syntax OK
+```
+
+### Files Modified
+- `code/dashboard_app.py`
+  - Added COLORS palette (lines 46-60)
+  - Added FP&A analytics functions (lines 475-600)
+  - Redesigned app layout (lines 780-1131)
+  - Updated callbacks for comparison mode (lines 1220-1430)
+
+---
+
+## Iteration 3 — FP&A Analytics
+
+### Date: 2026-01-31
+
+### Summary
+FP&A analytics were integrated as part of Iteration 2. The following features are now complete:
+
+### Features Implemented
+
+#### 1. Period Comparison Calculations
+- [x] MoM (Month-over-Month) absolute and % delta
+- [x] QoQ (Quarter-over-Quarter) absolute and % delta
+- [x] YoY (Year-over-Year) absolute and % delta
+
+#### 2. Variance Driver Decomposition
+- [x] Top 10 contributors to net cashflow change
+- [x] Category_L2 level granularity
+- [x] Visual bridge chart with positive/negative coloring
+
+#### 3. KPI Delta Indicators
+- [x] Absolute variance displayed on each KPI tile
+- [x] Percentage change calculation with proper handling of:
+  - Zero denominators (displays "N/A")
+  - Sign conventions (positive = green, negative = red)
+
+### Key Functions
+```python
+def get_prior_period_months(current_months: List[str], comparison_type: str) -> List[str]:
+    """
+    Get prior period months for comparison.
+    comparison_type: 'MoM', 'QoQ', 'YoY'
+    """
+    # MoM: offset by 1 month
+    # QoQ: offset by 3 months
+    # YoY: offset by 12 months
+
+def _format_delta_pct(current: float, prior: float) -> Tuple[str, str]:
+    """
+    Calculate percentage change.
+    Returns (formatted_string, color)
+    """
+    pct_change = ((current - prior) / abs(prior)) * 100
+```
+
+### Audit Trail
+- All calculations are deterministic and based on classified transaction data
+- Prior period comparison uses the same filter logic as current period
+- Variance drivers are aggregated at Category_L2 level for traceability
+
+---
+
+## Summary
+
+### Total Changes Made
+
+| Iteration | Scope | Key Deliverables |
+|-----------|-------|------------------|
+| **1** | Classification | 7 new rules (R17-R23), ~$210k reclassified |
+| **2** | Dashboard UI | McKinsey-style layout, sidebar filters |
+| **3** | FP&A Analytics | MoM/QoQ/YoY comparison, variance drivers |
+
+### Files Changed
+1. `code/auto_classify_transactions.py` - 7 new rules, test cases
+2. `code/dashboard_app.py` - Complete UI redesign, analytics functions
+3. `docs/PROGRESS.md` - This documentation
+
+### Verification Commands
+```bash
+# Test classification rules
+RUN_SELF_CHECKS=1 python code/auto_classify_transactions.py
+
+# Verify dashboard syntax
+python -m py_compile code/dashboard_app.py
+```
