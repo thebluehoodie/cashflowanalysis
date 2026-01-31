@@ -102,6 +102,14 @@ MANAGERIAL_DERIVE_MAP: Dict[Tuple[str, str], Tuple[str, str]] = {
     ("INCOME", "OTHER_INCOME"): ("INCOME", "OTHER_INCOME"),
     ("LIFESTYLE", "DISCRETIONARY"): ("LIFESTYLE", "DISCRETIONARY"),
     ("NON-CASH", "ACCOUNTING_ADJUSTMENT"): ("NON-CASH", "ACCOUNTING_ADJUSTMENT"),
+    # R17+ new mappings
+    ("SAVINGS_INVESTING", "SRS_CONTRIBUTION"): ("SAVINGS", "SRS_CONTRIBUTION"),
+    ("SAVINGS_INVESTING", "CPF_VOLUNTARY"): ("SAVINGS", "CPF_VOLUNTARY"),
+    ("HOUSING", "TOWN_COUNCIL_FEES"): ("HOUSING", "TOWN_COUNCIL_FEES"),
+    ("INCOME", "GOVT_PAYOUT"): ("INCOME", "GOVT_PAYOUT"),
+    ("LIFESTYLE", "CASH_WITHDRAWAL"): ("LIFESTYLE", "CASH_WITHDRAWAL"),
+    ("LIFESTYLE", "TELECOM"): ("LIFESTYLE", "TELECOM"),
+    ("LIFESTYLE", "TRANSIT"): ("LIFESTYLE", "TRANSIT"),
 }
 
 
@@ -172,6 +180,66 @@ TRUST_BANK_INTERNAL_PATTERNS = [
 
 INS_INFLOW_MARKERS = [r"\bINWARD\s+CR\b", r"\bCR\s*-\s*GIRO\b"]
 INS_OUTFLOW_MARKERS = [r"\bINWARD\s+DR\b", r"\bDR\s*-\s*GIRO\b"]
+
+# ======================================================
+# R17+ PATTERNS (new rules to reduce fallback pressure)
+# ======================================================
+
+# R17: SRS (Supplementary Retirement Scheme) contributions
+SRS_PATTERNS = [
+    r"\bSRS\s+CONT\b",
+    r"\(SRS\)",
+    r"\bSRS\s+CONTRIBUTION\b",
+]
+
+# R18: Voluntary CPF (Central Provident Fund) top-ups
+CPF_PATTERNS = [
+    r"\bCENTRAL\s+PROVIDENT\s+FU\b",
+    r"\bCPF\s+TOP[- ]?UP\b",
+    r"\bCPF\s+CONTRIBUTION\b",
+]
+
+# R19: Town Council / HDB conservancy fees
+TOWN_COUNCIL_PATTERNS = [
+    r"TOWNCOUNCIL",  # Matches WESTCOASTTOWNCOUNCIL, ANGMOKIOTOWNCOUNCIL etc.
+    r"\bTOWN\s+COUNCIL\b",
+    r"\bTC\s+S&CC\b",  # Town Council Service & Conservancy Charges
+]
+
+# R20: Government payouts (inflows)
+GOVT_PAYOUT_PATTERNS = [
+    r"\bGOVT?\s+PAYOUT\b",
+    r"\bGOV\s+GOV\b",
+    r"\bGST\s+VOUCHER\b",
+    r"\bCDC\s+VOUCHER\b",
+]
+
+# R21: ATM cash withdrawals (explicit rule)
+ATM_WITHDRAWAL_PATTERNS = [
+    r"\bCASH\s+WITHDRAWAL\b",
+    r"\bATM\s+WITHDRAWAL\b",
+    r"\bCASH\s+WITHDRAWAL-ATM\b",
+    r"\bCASH\s+WITHDRAWAL-SATM\b",
+]
+
+# R22: Telecom utilities
+TELECOM_PATTERNS = [
+    r"\bSINGTEL\b",
+    r"\bSTARHUB\b",
+    r"\bM1\s+LIMITED\b",
+    r"\bM1\b(?!\s*\d)",  # M1 not followed by digit (to avoid model numbers)
+    r"\bSIMBA\s+TELECOM\b",
+    r"\bTPG\s+TELECOM\b",
+]
+
+# R23: Public transit
+TRANSIT_PATTERNS = [
+    r"\bTRANSIT\b",
+    r"\bSMRT\b",
+    r"\bSBS\s+TRANSIT\b",
+    r"\bEZ-?LINK\b",
+    r"\bCONSUMER\s+TRANSIT\b",
+]
 
 
 # ======================================================
@@ -541,6 +609,15 @@ P_TRUST_INTERNAL = compile_patterns(TRUST_BANK_INTERNAL_PATTERNS)
 P_INS_IN = compile_patterns(INS_INFLOW_MARKERS)
 P_INS_OUT = compile_patterns(INS_OUTFLOW_MARKERS)
 
+# R17+ compiled patterns
+P_SRS = compile_patterns(SRS_PATTERNS)
+P_CPF = compile_patterns(CPF_PATTERNS)
+P_TOWN_COUNCIL = compile_patterns(TOWN_COUNCIL_PATTERNS)
+P_GOVT_PAYOUT = compile_patterns(GOVT_PAYOUT_PATTERNS)
+P_ATM = compile_patterns(ATM_WITHDRAWAL_PATTERNS)
+P_TELECOM = compile_patterns(TELECOM_PATTERNS)
+P_TRANSIT = compile_patterns(TRANSIT_PATTERNS)
+
 
 # ======================================================
 # CLASSIFICATION RESULT
@@ -854,6 +931,154 @@ def classify_row(desc: str, amount: float) -> ClassResult:
             managerial_l2="INTERNAL_TRANSFER",
             is_cc_settlement=False,
         )
+
+    # ======================================================
+    # R17+ NEW RULES (to reduce fallback pressure)
+    # ======================================================
+
+    # Priority 17: SRS (Supplementary Retirement Scheme) contributions
+    if amount < 0 and has_any(d, P_SRS):
+        return ClassResult(
+            record_type="TRANSACTION",
+            flow_nature=FLOW_NATURE["EXPENSE"],
+            cashflow_statement=CFS["INVESTING"],
+            econ_l1=EP_L1["SAVINGS_INVESTING"],
+            econ_l2="SRS_CONTRIBUTION",
+            asset_context=ASSET_CTX["FINANCIAL"],
+            stability_class=STABILITY["SEMI"],
+            baseline_eligible=True,
+            event_tag=EVENT_TAG["NONE"],
+            bank_rail=rail,
+            rule_id="R17_SRS_CONTRIBUTION",
+            rule_explanation="SRS contribution detected. Investing cashflow (retirement savings).",
+            managerial_l1="SAVINGS",
+            managerial_l2="SRS_CONTRIBUTION",
+            is_cc_settlement=False,
+        )
+
+    # Priority 18: CPF voluntary top-ups
+    if amount < 0 and has_any(d, P_CPF):
+        return ClassResult(
+            record_type="TRANSACTION",
+            flow_nature=FLOW_NATURE["EXPENSE"],
+            cashflow_statement=CFS["INVESTING"],
+            econ_l1=EP_L1["SAVINGS_INVESTING"],
+            econ_l2="CPF_VOLUNTARY",
+            asset_context=ASSET_CTX["FINANCIAL"],
+            stability_class=STABILITY["SEMI"],
+            baseline_eligible=True,
+            event_tag=EVENT_TAG["NONE"],
+            bank_rail=rail,
+            rule_id="R18_CPF_VOLUNTARY",
+            rule_explanation="Voluntary CPF top-up detected. Investing cashflow (retirement savings).",
+            managerial_l1="SAVINGS",
+            managerial_l2="CPF_VOLUNTARY",
+            is_cc_settlement=False,
+        )
+
+    # Priority 19: Town Council / conservancy fees
+    if amount < 0 and has_any(d, P_TOWN_COUNCIL):
+        return ClassResult(
+            record_type="TRANSACTION",
+            flow_nature=FLOW_NATURE["EXPENSE"],
+            cashflow_statement=CFS["OPERATING"],
+            econ_l1=EP_L1["HOUSING"],
+            econ_l2="TOWN_COUNCIL_FEES",
+            asset_context=ASSET_CTX["PROPERTY"],
+            stability_class=STABILITY["STRUCTURAL"],
+            baseline_eligible=True,
+            event_tag=EVENT_TAG["NONE"],
+            bank_rail=rail,
+            rule_id="R19_TOWN_COUNCIL",
+            rule_explanation="Town Council / conservancy fees detected. Operating housing expense.",
+            managerial_l1="HOUSING",
+            managerial_l2="TOWN_COUNCIL_FEES",
+            is_cc_settlement=False,
+        )
+
+    # Priority 20: Government payouts (inflows only)
+    if amount > 0 and has_any(d, P_GOVT_PAYOUT):
+        return ClassResult(
+            record_type="TRANSACTION",
+            flow_nature=FLOW_NATURE["INCOME"],
+            cashflow_statement=CFS["OPERATING"],
+            econ_l1=EP_L1["INCOME"],
+            econ_l2="GOVT_PAYOUT",
+            asset_context=ASSET_CTX["GENERAL"],
+            stability_class=STABILITY["VARIABLE"],
+            baseline_eligible=False,
+            event_tag=EVENT_TAG["NONE"],
+            bank_rail=rail,
+            rule_id="R20_GOVT_PAYOUT",
+            rule_explanation="Government payout/grant detected. Operating income (non-baseline).",
+            managerial_l1="INCOME",
+            managerial_l2="GOVT_PAYOUT",
+            is_cc_settlement=False,
+        )
+
+    # Priority 21: ATM cash withdrawals
+    if amount < 0 and has_any(d, P_ATM):
+        return ClassResult(
+            record_type="TRANSACTION",
+            flow_nature=FLOW_NATURE["EXPENSE"],
+            cashflow_statement=CFS["OPERATING"],
+            econ_l1=EP_L1["LIFESTYLE"],
+            econ_l2="CASH_WITHDRAWAL",
+            asset_context=ASSET_CTX["GENERAL"],
+            stability_class=STABILITY["VARIABLE"],
+            baseline_eligible=False,
+            event_tag=EVENT_TAG["NONE"],
+            bank_rail="ATM",
+            rule_id="R21_ATM_WITHDRAWAL",
+            rule_explanation="ATM cash withdrawal detected. Operating lifestyle expense (cash-based spending).",
+            managerial_l1="LIFESTYLE",
+            managerial_l2="CASH_WITHDRAWAL",
+            is_cc_settlement=False,
+        )
+
+    # Priority 22: Telecom utilities
+    if amount < 0 and has_any(d, P_TELECOM):
+        return ClassResult(
+            record_type="TRANSACTION",
+            flow_nature=FLOW_NATURE["EXPENSE"],
+            cashflow_statement=CFS["OPERATING"],
+            econ_l1=EP_L1["LIFESTYLE"],
+            econ_l2="TELECOM",
+            asset_context=ASSET_CTX["GENERAL"],
+            stability_class=STABILITY["STRUCTURAL"],
+            baseline_eligible=True,
+            event_tag=EVENT_TAG["NONE"],
+            bank_rail=rail,
+            rule_id="R22_TELECOM",
+            rule_explanation="Telecom bill detected. Operating lifestyle expense (utilities).",
+            managerial_l1="LIFESTYLE",
+            managerial_l2="TELECOM",
+            is_cc_settlement=False,
+        )
+
+    # Priority 23: Public transit
+    if amount < 0 and has_any(d, P_TRANSIT):
+        return ClassResult(
+            record_type="TRANSACTION",
+            flow_nature=FLOW_NATURE["EXPENSE"],
+            cashflow_statement=CFS["OPERATING"],
+            econ_l1=EP_L1["LIFESTYLE"],
+            econ_l2="TRANSIT",
+            asset_context=ASSET_CTX["GENERAL"],
+            stability_class=STABILITY["STRUCTURAL"],
+            baseline_eligible=True,
+            event_tag=EVENT_TAG["NONE"],
+            bank_rail=rail,
+            rule_id="R23_TRANSIT",
+            rule_explanation="Public transit expense detected. Operating lifestyle expense.",
+            managerial_l1="LIFESTYLE",
+            managerial_l2="TRANSIT",
+            is_cc_settlement=False,
+        )
+
+    # ======================================================
+    # FALLBACK RULES (R14-R16)
+    # ======================================================
 
     # 13) Generic inflows (fallback)
     if amount > 0:
@@ -1203,6 +1428,9 @@ def _self_check() -> None:
                 "SourceFile": "test.csv",
                 "RowOrder": 1,
                 "Txn_ID": "",
+                "Balance": 5000.0,
+                "Withdrawals": 0.0,
+                "Deposits": 1200.0,
             },
             {
                 "Date": "2024-01-02",
@@ -1211,6 +1439,9 @@ def _self_check() -> None:
                 "Description": "MISC EXPENSE",
                 "SourceFile": "test.csv",
                 "RowOrder": 2,
+                "Balance": 4950.0,
+                "Withdrawals": 50.0,
+                "Deposits": 0.0,
             },
         ]
     )
@@ -1242,6 +1473,52 @@ def _self_check() -> None:
     row = out[out["Description"].str.upper() == "MISC EXPENSE"].iloc[0]
     assert row["Managerial_Purpose_L1"] == "HOUSING"
     assert row["Managerial_Purpose_L2"] == "RENOVATION"
+
+    # ======================================================
+    # R17+ RULE TESTS
+    # ======================================================
+
+    # Test R17: SRS contribution
+    result = classify_row("MISC DEBIT (SRS) PIB2111215947733448 SRS CONT 180544711", -15300.0)
+    assert result.rule_id == "R17_SRS_CONTRIBUTION", f"Expected R17, got {result.rule_id}"
+    assert result.cashflow_statement == "INVESTING"
+    assert result.econ_l2 == "SRS_CONTRIBUTION"
+
+    # Test R18: CPF voluntary top-up
+    result = classify_row("PAYNOW-FAST PIB2212048050781800 CENTRAL PROVIDENT FU OTHR QARR3509001840826488", -8000.0)
+    assert result.rule_id == "R18_CPF_VOLUNTARY", f"Expected R18, got {result.rule_id}"
+    assert result.cashflow_statement == "INVESTING"
+    assert result.econ_l2 == "CPF_VOLUNTARY"
+
+    # Test R19: Town Council fees
+    result = classify_row("INWARD DR - GIRO TCSC C91528519610 WESTCOASTTOWNCOUNCIL WA-GDED-0000015339733", -49.1)
+    assert result.rule_id == "R19_TOWN_COUNCIL", f"Expected R19, got {result.rule_id}"
+    assert result.cashflow_statement == "OPERATING"
+    assert result.econ_l2 == "TOWN_COUNCIL_FEES"
+
+    # Test R20: Government payout (inflow)
+    result = classify_row("INWARD CR - GIRO OTHR OTHER GOVT PAYOUT GOVT PAYOUT", 187.5)
+    assert result.rule_id == "R20_GOVT_PAYOUT", f"Expected R20, got {result.rule_id}"
+    assert result.cashflow_statement == "OPERATING"
+    assert result.econ_l2 == "GOVT_PAYOUT"
+
+    # Test R21: ATM withdrawal
+    result = classify_row("CASH WITHDRAWAL-ATM 79608204", -100.0)
+    assert result.rule_id == "R21_ATM_WITHDRAWAL", f"Expected R21, got {result.rule_id}"
+    assert result.bank_rail == "ATM"
+    assert result.econ_l2 == "CASH_WITHDRAWAL"
+
+    # Test R22: Telecom
+    result = classify_row("BILL PAYMENT MBK-SINGTEL 35044279", -57.57)
+    assert result.rule_id == "R22_TELECOM", f"Expected R22, got {result.rule_id}"
+    assert result.econ_l2 == "TELECOM"
+
+    # Test R23: Transit
+    result = classify_row("NETS DEBIT-CONSUMER TRANSIT LI10565000 79608204", -60.0)
+    assert result.rule_id == "R23_TRANSIT", f"Expected R23, got {result.rule_id}"
+    assert result.econ_l2 == "TRANSIT"
+
+    print("R17+ rule tests passed.")
 
 
 def main():
