@@ -4,3 +4,6 @@ data/
 __pycache__/
 *.pyc
 code.zip
+
+# Ignore generated diagnostic artifacts
+diagnostics/*.csv
