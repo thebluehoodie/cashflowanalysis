@@ -226,3 +226,163 @@ RUN_SELF_CHECKS=1 python code/auto_classify_transactions.py
 # Verify dashboard syntax
 python -m py_compile code/dashboard_app.py
 ```
+
+---
+
+## Iteration 4 — Equity Build-Up Feature (Part 1)
+
+### Date: 2026-02-01
+
+### Objective
+Add equity build-up analytics based on monthly loan outstanding balances and integrate into the dashboard.
+
+### Constraints
+- No refactoring of existing cashflow classification logic
+- Equity is balance-sheet analytics; keep separate from Stage 2 classifier
+- Deterministic, audit-grade computations only
+- Use unittest for tests
+
+### Scope - ITERATION 1: Equity Module + Unit Tests
+Implement `equity_module.py` and comprehensive unit tests.
+
+### Changes Implemented
+
+#### 1. Created `code/equity_module.py`
+**Purpose**: Compute monthly equity build-up from loan outstanding balances
+
+**Features**:
+- Loads loan balances from `inputs/loan_balances.csv`
+- Required columns: `Loan_ID`, `AsOfMonth` (YYYY-MM), `Outstanding_Balance`
+- Optional columns: `Property_ID`, `Loan_Event`
+- Computes equity metrics:
+  * `Principal_Paid = max(0, Prev_Balance - Curr_Balance)`
+  * `Balance_Increase = max(0, Curr_Balance - Prev_Balance)`
+- Outputs to `outputs/equity_build_up_monthly.csv`
+- Deterministic sorting by `Loan_ID`, `AsOfMonth`
+- Environment variable support: `EQUITY_INPUT_CSV`, `EQUITY_OUTPUT_CSV`
+- Comprehensive validation:
+  * Missing files → FileNotFoundError
+  * Invalid formats → ValueError
+  * Null values → ValueError
+  * Non-numeric balances → ValueError
+- Audit-grade output with all fields preserved
+
+**Output Schema**:
+```
+Loan_ID, Property_ID, AsOfMonth, Outstanding_Balance,
+Previous_Balance, Principal_Paid, Balance_Increase, Loan_Event
+```
+
+#### 2. Created `tests/test_equity_module.py`
+**Test Coverage**: 13 comprehensive unit tests
+
+**Test Categories**:
+- **Core Functionality**:
+  * `test_basic_principal_payment`: Single loan principal tracking
+  * `test_balance_increase_refinance`: Refinance/top-up detection
+  * `test_multiple_loans`: Independent multi-loan tracking
+  * `test_deterministic_sorting`: Consistent Loan_ID, AsOfMonth ordering
+
+- **Schema Handling**:
+  * `test_optional_columns`: Property_ID and Loan_Event preservation
+  * `test_missing_optional_columns`: Auto-addition of missing optional fields
+  * `test_output_file_created`: Output structure validation
+
+- **Error Handling**:
+  * `test_file_not_found`: Missing input file detection
+  * `test_missing_required_columns`: Schema validation
+  * `test_empty_file`: Empty CSV handling
+  * `test_invalid_month_format`: AsOfMonth format validation (YYYY-MM)
+  * `test_non_numeric_balance`: Non-numeric Outstanding_Balance detection
+  * `test_null_loan_id`: Null Loan_ID rejection
+
+#### 3. Created Sample Data
+**File**: `inputs/loan_balances.csv`
+
+**Contents**:
+- 2 loans (L001, L002)
+- 9 records total
+- Demonstrates:
+  * Regular principal payments (L001: $1,500/month)
+  * Refinance/top-up event (L002: +$54,000 in month 5)
+  * Multi-property tracking (P123, P456)
+
+#### 4. Created Directories
+- `tests/` - Unit test suite
+- `inputs/` - Input data directory
+- `outputs/` - Generated analytics directory
+
+### Commands Run
+
+```bash
+# Install dependencies
+pip install -q pandas numpy matplotlib python-dotenv openpyxl
+
+# Run unit tests
+python -m unittest tests.test_equity_module -v
+
+# Test module with sample data
+python code/equity_module.py
+```
+
+### Results
+
+#### Unit Tests: ✅ All 13 tests passed (0.097s)
+- `test_basic_principal_payment`: ✓
+- `test_balance_increase_refinance`: ✓
+- `test_multiple_loans`: ✓
+- `test_optional_columns`: ✓
+- `test_missing_optional_columns`: ✓
+- `test_file_not_found`: ✓
+- `test_missing_required_columns`: ✓
+- `test_empty_file`: ✓
+- `test_invalid_month_format`: ✓
+- `test_non_numeric_balance`: ✓
+- `test_null_loan_id`: ✓
+- `test_output_file_created`: ✓
+- `test_deterministic_sorting`: ✓
+
+#### Sample Data Processing: ✅ Success
+```
+Input:  9 records, 2 loans (L001, L002)
+Output: 9 records processed
+Loans tracked: 2
+Date range: 2024-01 to 2024-06
+Total principal paid: $10,500.00
+Output: outputs/equity_build_up_monthly.csv
+```
+
+#### Output Verification
+**Sample Records**:
+```csv
+L001,P123,2024-02,498500,500000.0,1500.0,0.0,Regular Payment
+L002,P456,2024-05,350000,296000.0,0.0,54000.0,Refinance/Top-up
+L002,P456,2024-06,348000,350000.0,2000.0,0.0,Regular Payment
+```
+
+**Validation**:
+- ✅ Principal_Paid correct: L001 = $1,500/month, L002 = $2,000/month
+- ✅ Balance_Increase correct: L002 month 5 = $54,000 (refinance)
+- ✅ Total principal paid: $10,500 (verified)
+- ✅ Sorting deterministic: Loan_ID, AsOfMonth ascending
+
+### Files Created
+1. `code/equity_module.py` (197 lines)
+2. `tests/test_equity_module.py` (314 lines)
+3. `inputs/loan_balances.csv` (sample data)
+4. `outputs/equity_build_up_monthly.csv` (generated output)
+
+### Next Steps
+
+**ITERATION 2**: Integrate equity module into `run_pipeline.py`
+- Add equity module call after Stage 2 (classification)
+- Handle missing input file gracefully (fail-fast with clear message)
+- Verify pipeline runs end-to-end
+
+**ITERATION 3**: Integrate equity outputs into `dashboard_app.py`
+- Add "Equity / Net Worth" section with:
+  * Equity Built (Principal Paid) for selected period
+  * Trend of cumulative principal paid over time
+- Graceful degradation if equity file missing
+
+✅ **Iteration 4.1 Complete**: Equity module and tests verified and working.
