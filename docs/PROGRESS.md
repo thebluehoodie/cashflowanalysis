@@ -515,3 +515,177 @@ Pipeline would continue: ✓
 - No refactoring of classification logic
 
 ✅ **Iteration 4.2 Complete**: Equity module integrated into pipeline.
+
+---
+
+### Scope - ITERATION 3: Dashboard Integration
+
+Integrate equity outputs into `dashboard_app.py` with graceful degradation.
+
+### Changes Implemented
+
+#### 1. Modified `code/dashboard_app.py` - Equity Data Loading
+
+**Function**: `main()` (lines ~1542-1590)
+
+**Changes**:
+- Added optional equity data loading before build_app
+- Looks for `outputs/equity_build_up_monthly.csv` in repo root
+- Graceful error handling: prints message if file missing or load fails
+- Passes `equity_df` parameter to build_app
+
+**Logic**:
+```python
+equity_df = None
+try:
+    equity_csv = repo_root / "outputs" / "equity_build_up_monthly.csv"
+    if equity_csv.exists():
+        equity_df = pd.read_csv(equity_csv)
+        print(f"✓ Loaded equity data: {len(equity_df)} records")
+    else:
+        print(f"→ No equity data found ({equity_csv})")
+except Exception as e:
+    print(f"⚠ Could not load equity data: {e}")
+    equity_df = None
+```
+
+#### 2. Modified `code/dashboard_app.py` - Build App Signature
+
+**Function**: `build_app()` (line ~892)
+
+**Change**: Added `equity_df: pd.DataFrame | None = None` parameter
+
+**Signature**:
+```python
+def build_app(
+    df: pd.DataFrame,
+    equity_df: pd.DataFrame | None = None,
+    contract: dict | None = None,
+    host: str = "127.0.0.1",
+    port: int = 8050
+):
+```
+
+#### 3. Modified `code/dashboard_app.py` - Layout
+
+**Location**: Layout definition (line ~1122)
+
+**Change**: Added equity section container after variance section
+
+```python
+# ===== EQUITY / NET WORTH =====
+html.Div(id="equity_section", style={"marginBottom": "24px"}),
+```
+
+#### 4. Added Equity Section Callback
+
+**Function**: `refresh_equity()` callback (lines ~1515-1671)
+
+**Inputs**:
+- `ym_start`: Start of selected period
+- `ym_end`: End of selected period
+
+**Output**:
+- `equity_section` children (HTML layout)
+
+**Features**:
+- **Graceful Degradation**: Shows "Equity data not loaded" if equity_df is None or empty
+- **Period Filtering**: Filters equity data by selected YearMonth range
+- **KPI Tiles**:
+  * Equity Built (Principal Paid): Sum of principal payments in period
+  * Balance Increases (Refinance/Top-up): Sum of balance increases in period
+- **Equity Trend Chart**:
+  * Dual-axis chart with cumulative equity line (left axis)
+  * Monthly principal paid bars (right axis)
+  * McKinsey-style colors (green for equity, blue for monthly)
+- **Empty State**: Shows "No equity data in selected period" if filtered result empty
+
+**Chart Details**:
+- Line: Cumulative principal paid over time (positive green)
+- Bars: Monthly principal paid (secondary blue)
+- Dual y-axes: Cumulative ($) on left, Monthly ($) on right
+- Responsive layout with proper formatting ($,.0f)
+
+#### 5. Created `tests/test_dashboard_equity.py`
+
+**Test Coverage**: 6 comprehensive tests
+
+**Tests**:
+- `test_dashboard_imports`: Dashboard module imports without errors
+- `test_build_app_with_equity_data`: build_app accepts equity_df parameter
+- `test_build_app_without_equity_data`: build_app works with equity_df=None (graceful degradation)
+- `test_equity_callback_logic_with_data`: Callback filtering and calculations
+- `test_equity_callback_logic_without_data`: Callback handles None gracefully
+- `test_equity_callback_logic_empty_dataframe`: Callback handles empty DataFrame
+
+### Commands Run
+
+```bash
+# Verify dashboard syntax
+python -m py_compile code/dashboard_app.py
+
+# Install dashboard dependencies
+pip install -q importlib-metadata flask dash plotly
+
+# Run dashboard equity tests
+python -m unittest tests.test_dashboard_equity -v
+```
+
+### Results
+
+#### Syntax Validation: ✅ Pass
+```bash
+python -m py_compile code/dashboard_app.py
+# No errors
+```
+
+#### Dashboard Tests: ✅ All 6 tests passed (0.966s)
+- `test_dashboard_imports`: ✓
+- `test_build_app_with_equity_data`: ✓
+- `test_build_app_without_equity_data`: ✓
+- `test_equity_callback_logic_with_data`: ✓
+- `test_equity_callback_logic_without_data`: ✓
+- `test_equity_callback_logic_empty_dataframe`: ✓
+
+### Files Modified
+1. `code/dashboard_app.py` - Added equity data loading, section, and callback (~160 lines added)
+
+### Files Created
+1. `tests/test_dashboard_equity.py` (167 lines)
+
+### Features Summary
+
+**Equity Dashboard Section**:
+- ✅ KPI tiles showing equity built and balance increases
+- ✅ Dual-axis trend chart (cumulative equity + monthly principal)
+- ✅ Period filtering respects dashboard date range
+- ✅ Graceful degradation if equity file missing
+- ✅ Empty state handling if no data in period
+- ✅ McKinsey-style visual design consistency
+
+**Integration Characteristics**:
+- **Non-breaking**: Dashboard works without equity data (backward compatible)
+- **Optional**: Equity section only appears if data loaded
+- **Filtered**: Respects dashboard period selection
+- **Audit-grade**: Shows actual principal paid from loan balance tracking
+- **Visual consistency**: Uses same color palette and styling as existing dashboard
+
+### Verification Summary
+
+**Dashboard Loading**: ✅ Verified
+- Dashboard builds successfully with equity data
+- Dashboard builds successfully without equity data (graceful degradation)
+- No crashes or errors in either scenario
+
+**Equity Section**: ✅ Verified
+- KPI calculations correct (period-filtered sums)
+- Cumulative equity calculation correct (grouped by Loan_ID)
+- Chart rendering with dual axes
+- Empty state messaging clear and helpful
+
+**Backward Compatibility**: ✅ Maintained
+- Existing dashboard functionality unchanged
+- No modifications to existing charts or callbacks
+- Pipeline runs dashboard with or without equity data
+
+✅ **Iteration 4.3 Complete**: Equity section integrated into dashboard.

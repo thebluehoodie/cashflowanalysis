@@ -889,7 +889,7 @@ def recurring_candidates(df: pd.DataFrame, min_months: int = 6) -> pd.DataFrame:
 # APP
 # ======================================================
 
-def build_app(df: pd.DataFrame, contract: dict | None = None, host: str = "127.0.0.1", port: int = 8050):
+def build_app(df: pd.DataFrame, equity_df: pd.DataFrame | None = None, contract: dict | None = None, host: str = "127.0.0.1", port: int = 8050):
     app = Dash(
         __name__,
         external_stylesheets=[INTER_STYLESHEET],
@@ -1118,6 +1118,9 @@ def build_app(df: pd.DataFrame, contract: dict | None = None, host: str = "127.0
 
                     # ===== VARIANCE ANALYSIS (NEW - for comparison mode) =====
                     html.Div(id="variance_section", style={"marginBottom": "24px"}),
+
+                    # ===== EQUITY / NET WORTH =====
+                    html.Div(id="equity_section", style={"marginBottom": "24px"}),
 
                     # ===== TREND LINE =====
                     html.Div([
@@ -1508,6 +1511,160 @@ def build_app(df: pd.DataFrame, contract: dict | None = None, host: str = "127.0
 
         return kpi_strip, variance_section, fig_waterfall, fig_drivers, fig_net, fig_inc, fig_sp, fig_drill, fig_rec
 
+    # ---------- equity section ----------
+    @app.callback(
+        Output("equity_section", "children"),
+        Input("ym_start", "value"),
+        Input("ym_end", "value"),
+    )
+    def refresh_equity(ym_start, ym_end):
+        """
+        Render equity/net worth section if equity data is available.
+        Shows graceful degradation if no equity data loaded.
+        """
+        if equity_df is None or equity_df.empty:
+            # Graceful degradation: no equity data
+            return html.Div([
+                html.H3("Equity / Net Worth", className="section-heading"),
+                html.Div([
+                    html.Div([
+                        html.P("Equity data not loaded", style={
+                            "color": COLORS["neutral_gray"],
+                            "fontSize": "14px",
+                            "textAlign": "center",
+                            "padding": "40px 20px",
+                        }),
+                        html.P("To enable equity analytics, create: inputs/loan_balances.csv", style={
+                            "color": COLORS["light_text"],
+                            "fontSize": "12px",
+                            "textAlign": "center",
+                        }),
+                    ], className="card-chart"),
+                ]),
+            ], className="chart-full")
+
+        # Filter equity data by selected period
+        eq = equity_df.copy()
+        if ym_start and ym_end:
+            eq = eq[(eq["AsOfMonth"] >= ym_start) & (eq["AsOfMonth"] <= ym_end)]
+
+        # Calculate total equity built in period
+        total_principal_paid = eq["Principal_Paid"].sum()
+        total_balance_increase = eq["Balance_Increase"].sum()
+
+        # Calculate cumulative principal paid over time
+        eq_sorted = equity_df.sort_values(["Loan_ID", "AsOfMonth"])
+        eq_sorted["Cumulative_Principal_Paid"] = eq_sorted.groupby("Loan_ID")["Principal_Paid"].cumsum()
+
+        # Aggregate by month for chart
+        monthly_equity = eq_sorted.groupby("AsOfMonth").agg({
+            "Principal_Paid": "sum",
+            "Cumulative_Principal_Paid": "sum",
+            "Balance_Increase": "sum",
+        }).reset_index()
+
+        # Create equity trend chart
+        if monthly_equity.empty:
+            fig_equity = go.Figure()
+            fig_equity.add_annotation(
+                text="No equity data in selected period",
+                x=0.5, y=0.5,
+                xref="paper", yref="paper",
+                showarrow=False,
+                font=dict(size=14, color=COLORS["neutral_gray"])
+            )
+        else:
+            fig_equity = go.Figure()
+
+            # Add cumulative principal paid line
+            fig_equity.add_trace(go.Scatter(
+                x=monthly_equity["AsOfMonth"],
+                y=monthly_equity["Cumulative_Principal_Paid"],
+                mode="lines+markers",
+                name="Cumulative Equity Built",
+                line=dict(color=COLORS["positive_green"], width=2),
+                marker=dict(size=8, color=COLORS["positive_green"]),
+            ))
+
+            # Add monthly principal paid bars
+            fig_equity.add_trace(go.Bar(
+                x=monthly_equity["AsOfMonth"],
+                y=monthly_equity["Principal_Paid"],
+                name="Monthly Principal Paid",
+                marker_color=COLORS["secondary_blue"],
+                yaxis="y2",
+            ))
+
+        fig_equity.update_layout(
+            title=dict(text="Equity Build-Up (Principal Paid)", font=dict(size=16, color=COLORS["dark_text"])),
+            font=dict(family=FIG_FONT, size=12, color=COLORS["dark_text"]),
+            plot_bgcolor=COLORS["bg_primary"],
+            paper_bgcolor=COLORS["bg_primary"],
+            xaxis_title="Month",
+            yaxis=dict(title="Cumulative Equity ($)", side="left", tickformat="$,.0f"),
+            yaxis2=dict(title="Monthly Principal ($)", side="right", overlaying="y", tickformat="$,.0f"),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            margin=dict(t=80, b=40, l=60, r=60),
+        )
+        fig_equity.update_xaxes(gridcolor=COLORS["border"])
+        fig_equity.update_yaxes(gridcolor=COLORS["border"])
+
+        # Create KPI tiles for equity
+        equity_kpis = html.Div([
+            html.Div([
+                html.Div("Equity Built (Principal Paid)", style={
+                    "fontSize": "12px",
+                    "color": COLORS["neutral_gray"],
+                    "marginBottom": "8px",
+                }),
+                html.Div(f"${total_principal_paid:,.0f}", style={
+                    "fontSize": "24px",
+                    "fontWeight": "600",
+                    "color": COLORS["positive_green"],
+                }),
+            ], style={
+                "backgroundColor": COLORS["bg_primary"],
+                "padding": "16px",
+                "borderRadius": "8px",
+                "border": f"1px solid {COLORS['border']}",
+                "flex": "1",
+            }),
+            html.Div([
+                html.Div("Balance Increases (Refinance/Top-up)", style={
+                    "fontSize": "12px",
+                    "color": COLORS["neutral_gray"],
+                    "marginBottom": "8px",
+                }),
+                html.Div(f"${total_balance_increase:,.0f}", style={
+                    "fontSize": "24px",
+                    "fontWeight": "600",
+                    "color": COLORS["accent_teal"],
+                }),
+            ], style={
+                "backgroundColor": COLORS["bg_primary"],
+                "padding": "16px",
+                "borderRadius": "8px",
+                "border": f"1px solid {COLORS['border']}",
+                "flex": "1",
+            }),
+        ], style={
+            "display": "flex",
+            "gap": "16px",
+            "marginBottom": "16px",
+        })
+
+        return html.Div([
+            html.H3("Equity / Net Worth", className="section-heading"),
+            equity_kpis,
+            html.Div([
+                dcc.Graph(
+                    figure=fig_equity,
+                    style={"height": "350px", "width": "100%"},
+                    config={"responsive": True},
+                )
+            ], className="card-chart"),
+        ], className="chart-full")
+
     # ---------- transaction table ----------
     @app.callback(
         Output("tx_table", "columns"),
@@ -1562,7 +1719,22 @@ def main():
 
     df = harmonize_schema(df_raw)
 
-    app = build_app(df, contract=contract, host=host, port=port)
+    # Load equity data if available (optional)
+    equity_df = None
+    try:
+        # Look for equity file in repo root / outputs
+        repo_root = Path(__file__).resolve().parents[1]
+        equity_csv = repo_root / "outputs" / "equity_build_up_monthly.csv"
+        if equity_csv.exists():
+            equity_df = pd.read_csv(equity_csv)
+            print(f"✓ Loaded equity data: {len(equity_df)} records")
+        else:
+            print(f"→ No equity data found ({equity_csv})")
+    except Exception as e:
+        print(f"⚠ Could not load equity data: {e}")
+        equity_df = None
+
+    app = build_app(df, equity_df=equity_df, contract=contract, host=host, port=port)
     app.run(debug=False, host=host, port=port)
 
 
