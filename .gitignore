@@ -7,3 +7,12 @@ code.zip
 
 # Ignore generated diagnostic artifacts
 diagnostics/*.csv
+
+# Ignore IDE/tool metadata
+.claude/
+
+# Ignore output artifacts
+outputs/*.csv
+
+# Ignore temporary files
+_ul

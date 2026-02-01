@@ -58,7 +58,9 @@ INSURERS = [
 # Internal/self-controlled entities. Keep conservative; you can extend later.
 SELF_ENTITIES = [
     "WEILUN", "SAM", "SAMANTHA", "SAMANTHA SEAH",
-    "TRUST BANK"
+    "TRUST BANK",
+    "3493939244",  # User-confirmed: personal MBK account
+    "3491284038",  # User-confirmed: personal MBK account
 ]
 
 CC_ISSUER_PATTERNS: Dict[str, List[str]] = {
@@ -239,6 +241,14 @@ TRANSIT_PATTERNS = [
     r"\bSBS\s+TRANSIT\b",
     r"\bEZ-?LINK\b",
     r"\bCONSUMER\s+TRANSIT\b",
+]
+
+# R24: Bank fees and charges
+BANK_FEE_PATTERNS = [
+    r"\bCHEQUE\s+CHARGES\b",
+    r"\bBANK\s+FEE\b",
+    r"\bSERVICE\s+CHARGE\b",
+    r"\bMONTHLY\s+FEE\b",
 ]
 
 
@@ -617,6 +627,7 @@ P_GOVT_PAYOUT = compile_patterns(GOVT_PAYOUT_PATTERNS)
 P_ATM = compile_patterns(ATM_WITHDRAWAL_PATTERNS)
 P_TELECOM = compile_patterns(TELECOM_PATTERNS)
 P_TRANSIT = compile_patterns(TRANSIT_PATTERNS)
+P_BANK_FEES = compile_patterns(BANK_FEE_PATTERNS)
 
 
 # ======================================================
@@ -1076,6 +1087,26 @@ def classify_row(desc: str, amount: float) -> ClassResult:
             is_cc_settlement=False,
         )
 
+    # Priority 24: Bank fees and charges
+    if amount < 0 and has_any(d, P_BANK_FEES):
+        return ClassResult(
+            record_type="TRANSACTION",
+            flow_nature=FLOW_NATURE["EXPENSE"],
+            cashflow_statement=CFS["OPERATING"],
+            econ_l1=EP_L1["FEES"],
+            econ_l2="BANK_FEES",
+            asset_context=ASSET_CTX["GENERAL"],
+            stability_class=STABILITY["STRUCTURAL"],
+            baseline_eligible=True,
+            event_tag=EVENT_TAG["NONE"],
+            bank_rail=rail,
+            rule_id="R24_BANK_FEES",
+            rule_explanation="Bank fees/charges detected. Operating fees expense.",
+            managerial_l1="FEES",
+            managerial_l2="BANK_FEES",
+            is_cc_settlement=False,
+        )
+
     # ======================================================
     # FALLBACK RULES (R14-R16)
     # ======================================================
@@ -1517,6 +1548,18 @@ def _self_check() -> None:
     result = classify_row("NETS DEBIT-CONSUMER TRANSIT LI10565000 79608204", -60.0)
     assert result.rule_id == "R23_TRANSIT", f"Expected R23, got {result.rule_id}"
     assert result.econ_l2 == "TRANSIT"
+
+    # Test MBK self-transfer (caught by R13 after adding account to SELF_ENTITIES)
+    result = classify_row("Funds Transfer mBK-3493939244", -1000.0)
+    assert result.rule_id == "R13_INTERNAL_TRANSFER", f"Expected R13, got {result.rule_id}"
+    assert result.cashflow_statement == "TRANSFER"
+    assert result.econ_l2 == "INTERNAL_TRANSFER"
+
+    # Test R24: Bank fees
+    result = classify_row("Cheque Charges", -0.75)
+    assert result.rule_id == "R24_BANK_FEES", f"Expected R24, got {result.rule_id}"
+    assert result.cashflow_statement == "OPERATING"
+    assert result.econ_l2 == "BANK_FEES"
 
     print("R17+ rule tests passed.")
 

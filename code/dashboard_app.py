@@ -58,165 +58,6 @@ COLORS = {
     "border": "#e2e8f0",            # Borders
     "header_bg": "#004990",         # Header background
 }
-GLOBAL_CSS = f"""
-html, body, div, span, applet, object, iframe,
-h1, h2, h3, h4, h5, h6, p, blockquote, pre,
-a, abbr, acronym, address, big, cite, code,
-del, dfn, em, img, ins, kbd, q, s, samp,
-small, strike, strong, sub, sup, tt, var,
-b, u, i, center,
-dl, dt, dd, ol, ul, li,
-fieldset, form, label, legend,
-table, caption, tbody, tfoot, thead, tr, th, td,
-article, aside, canvas, details, embed,
-figure, figcaption, footer, header, hgroup,
-menu, nav, output, ruby, section, summary,
-time, mark, audio, video,
-input, textarea, select, button {{
-  font-family: {FONT_STACK} !important;
-}}
-
-/* Responsive Shell Layout */
-.app-shell {{
-  display: flex;
-  flex-direction: row;
-  gap: 16px;
-  height: calc(100vh - 70px);
-}}
-
-.sidebar {{
-  flex: 0 0 320px;
-  width: 320px;
-  padding: 20px;
-  background-color: {COLORS["bg_primary"]};
-  border-right: 1px solid {COLORS["border"]};
-  overflow-y: auto;
-}}
-
-.main-content {{
-  flex: 1;
-  min-width: 0;
-  padding: 24px;
-  overflow-y: auto;
-  background-color: {COLORS["bg_secondary"]};
-}}
-
-/* Page Container */
-.page {{
-  max-width: 1400px;
-  margin: 0 auto;
-  padding: 16px;
-  width: 100%;
-}}
-
-/* Card Styles */
-.card {{
-  background-color: {COLORS["bg_primary"]};
-  border: 1px solid {COLORS["border"]};
-  border-radius: 8px;
-  padding: 16px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-}}
-
-.card-chart {{
-  background-color: {COLORS["bg_primary"]};
-  border: 1px solid {COLORS["border"]};
-  border-radius: 8px;
-  padding: 12px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-}}
-
-/* KPI Grid */
-.kpi-grid {{
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 12px;
-}}
-
-.kpi-tile {{
-  padding: 16px 20px;
-  border: 1px solid {COLORS["border"]};
-  border-radius: 8px;
-  background-color: {COLORS["bg_primary"]};
-  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-}}
-
-/* Chart Row Grid */
-.chart-row {{
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 24px;
-  margin-bottom: 24px;
-}}
-
-.chart-full {{
-  margin-bottom: 24px;
-}}
-
-/* Section Heading */
-.section-heading {{
-  font-size: 16px;
-  font-weight: 600;
-  color: {COLORS["dark_text"]};
-  margin-bottom: 12px;
-  margin-top: 0;
-}}
-
-/* Filter Section */
-.filter-section {{
-  margin-bottom: 20px;
-}}
-
-.filter-label {{
-  font-weight: 600;
-  color: {COLORS["dark_text"]};
-  font-size: 12px;
-  margin-bottom: 6px;
-  display: block;
-}}
-
-/* Mobile Responsive */
-@media (max-width: 1100px) {{
-  .app-shell {{
-    flex-direction: column;
-    height: auto;
-  }}
-
-  .sidebar {{
-    flex: 0 0 auto;
-    width: 100%;
-    border-right: none;
-    border-bottom: 1px solid {COLORS["border"]};
-    max-height: 400px;
-  }}
-
-  .main-content {{
-    padding: 16px;
-  }}
-
-  .chart-row {{
-    grid-template-columns: 1fr;
-  }}
-
-  .kpi-grid {{
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  }}
-}}
-
-@media (max-width: 768px) {{
-  .kpi-grid {{
-    grid-template-columns: 1fr;
-  }}
-
-  .sidebar {{
-    padding: 16px;
-  }}
-
-  .main-content {{
-    padding: 12px;
-  }}
-}}
-"""
 
 def load_env_file() -> None:
     """
@@ -242,6 +83,38 @@ def load_settings() -> Tuple[str, str, int]:
     host = os.getenv("DASH_HOST", "127.0.0.1").strip()
     port = int(os.getenv("DASH_PORT", "8050").strip())
     return input_csv, host, port
+
+def get_assets_version() -> str:
+    """
+    Get cache-busting version string for assets.
+    Uses DASH_ASSETS_VERSION env var, falls back to git SHA, then date.
+    """
+    env_version = os.getenv("DASH_ASSETS_VERSION", "").strip()
+    if env_version:
+        return env_version
+
+    # Try git short SHA
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except Exception:
+        pass
+
+    # Fallback to date
+    from datetime import datetime
+    return datetime.now().strftime("%Y%m%d")
+
+def is_debug_ui_enabled() -> bool:
+    """Check if UI debug mode is enabled via DASH_DEBUG_UI=1."""
+    return os.getenv("DASH_DEBUG_UI", "0").strip() == "1"
 
 
 # ======================================================
@@ -892,10 +765,73 @@ def recurring_candidates(df: pd.DataFrame, min_months: int = 6) -> pd.DataFrame:
 # ======================================================
 
 def build_app(df: pd.DataFrame, equity_df: pd.DataFrame | None = None, contract: dict | None = None, host: str = "127.0.0.1", port: int = 8050):
+    # Explicitly set assets folder to ensure CSS loads regardless of working directory
+    assets_path = Path(__file__).resolve().parent / "assets"
+
+    # Get cache-busting version for assets
+    assets_version = get_assets_version()
+
+    # Verify assets folder exists
+    if not assets_path.exists():
+        print(f"[ERROR] Assets folder not found: {assets_path}")
+        print(f"[ERROR] CSS will NOT load. Expected dashboard.css at: {assets_path / 'dashboard.css'}")
+    else:
+        css_file = assets_path / "dashboard.css"
+        if css_file.exists():
+            print(f"[OK] CSS file found: {css_file} ({css_file.stat().st_size} bytes)")
+        else:
+            print(f"[WARNING] dashboard.css not found at: {css_file}")
+
+    print(f"[INFO] Assets folder: {assets_path}")
+    print(f"[INFO] Assets version (cache-busting): {assets_version}")
+    print(f"[INFO] Current working directory: {Path.cwd()}")
+    print(f"[INFO] UI Debug mode: {'ENABLED' if is_debug_ui_enabled() else 'DISABLED'}")
+
     app = Dash(
         __name__,
         external_stylesheets=[INTER_STYLESHEET],
+        assets_folder=str(assets_path),
+        assets_url_path="/assets",
+        url_base_pathname="/",
+        suppress_callback_exceptions=False,
     )
+
+    # Set assets version for cache-busting (no need to add it to url_base_pathname)
+    # Dash automatically appends ?v={version} to asset URLs when assets_ignore is configured
+    # For manual cache-busting, we'll add a meta tag in the layout
+    app.index_string = f'''
+    <!DOCTYPE html>
+    <html>
+        <head>
+            {{%metas%}}
+            <title>{{%title%}}</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+            <meta http-equiv="Pragma" content="no-cache">
+            <meta http-equiv="Expires" content="0">
+            {{%favicon%}}
+            {{%css%}}
+        </head>
+        <body>
+            {{%app_entry%}}
+            <footer>
+                {{%config%}}
+                {{%scripts%}}
+                {{%renderer%}}
+            </footer>
+            <script>
+                // Force CSS reload by appending version query parameter
+                document.querySelectorAll('link[rel="stylesheet"]').forEach(link => {{
+                    if (link.href.includes('/assets/')) {{
+                        const url = new URL(link.href);
+                        url.searchParams.set('v', '{assets_version}');
+                        link.href = url.toString();
+                    }}
+                }});
+            </script>
+        </body>
+    </html>
+    '''
 
     app.title = "Cashflow FP&A Dashboard"
 
@@ -909,8 +845,6 @@ def build_app(df: pd.DataFrame, equity_df: pd.DataFrame | None = None, contract:
 
     app.layout = html.Div(
         [
-            dcc.Markdown(f"<style>{GLOBAL_CSS}</style>", dangerously_allow_html=True),
-
             # ===== EXECUTIVE HEADER (McKinsey-style) =====
             html.Div([
                 html.Div([
@@ -933,6 +867,40 @@ def build_app(df: pd.DataFrame, equity_df: pd.DataFrame | None = None, contract:
                 "alignItems": "center",
                 "marginBottom": "0",
             }),
+
+            # CSS Load Indicator: visible (red) if CSS fails to load; hidden if CSS loads
+            html.Div(
+                "⚠ CSS NOT LOADED - Layout degraded. Check assets/dashboard.css path.",
+                className="css-load-indicator",
+                style={
+                    "display": "block",
+                    "backgroundColor": "#dc2626",
+                    "color": "white",
+                    "padding": "12px 24px",
+                    "fontWeight": "600",
+                    "textAlign": "center",
+                    "fontSize": "14px",
+                    "borderBottom": "3px solid #991b1b",
+                },
+            ),
+
+            # Viewport Debug Indicator: only visible when DASH_DEBUG_UI=1
+            html.Div(
+                id="viewport-debug",
+                children="Viewport: Loading...",
+                className="viewport-debug-indicator",
+                style={
+                    "display": "block" if is_debug_ui_enabled() else "none",
+                    "backgroundColor": "#0891b2",
+                    "color": "white",
+                    "padding": "8px 16px",
+                    "fontWeight": "500",
+                    "fontSize": "11px",
+                    "fontFamily": "monospace",
+                    "borderBottom": "2px solid #0e7490",
+                    "textAlign": "center",
+                },
+            ),
 
             html.Div(id="contract_banner", style={"marginBottom": "0"}),
             dcc.Store(id="contract_store", data=contract or {}),
@@ -1246,6 +1214,29 @@ def build_app(df: pd.DataFrame, equity_df: pd.DataFrame | None = None, contract:
                 "padding": "8px 10px",
                 "backgroundColor": "#fafafa",
             },
+        )
+
+    # Viewport debug: clientside callback to update viewport info on page load
+    if is_debug_ui_enabled():
+        app.clientside_callback(
+            """
+            function(data) {
+                const width = window.innerWidth;
+                let breakpoint = 'UNKNOWN';
+
+                if (width >= 1400) {
+                    breakpoint = 'DESKTOP (≥1400px): 4 KPI columns';
+                } else if (width >= 1100) {
+                    breakpoint = 'LAPTOP (1100-1399px): 2 KPI columns';
+                } else {
+                    breakpoint = 'MOBILE (<1100px): 1 KPI column';
+                }
+
+                return `Viewport: ${width}px | ${breakpoint}`;
+            }
+            """,
+            Output("viewport-debug", "children"),
+            Input("contract_store", "data"),
         )
 
     # ---------- filtering ----------
@@ -1724,16 +1715,34 @@ def main():
     # Load equity data if available (optional)
     equity_df = None
     try:
+        # Import validation function
+        from networth.loan_equity import validate_equity_data
+
         # Look for equity file in repo root / outputs
         repo_root = Path(__file__).resolve().parents[1]
         equity_csv = repo_root / "outputs" / "equity_build_up_monthly.csv"
         if equity_csv.exists():
             equity_df = pd.read_csv(equity_csv)
-            print(f"✓ Loaded equity data: {len(equity_df)} records")
+            print(f"[OK] Loaded equity data: {len(equity_df)} records")
+
+            # Validate equity data
+            is_valid, errors = validate_equity_data(equity_df)
+            if not is_valid:
+                print("[WARNING] Equity data validation failed:")
+                for err in errors:
+                    if not err.startswith("[WARNING]"):
+                        print(f"  [ERROR] {err}")
+                print("[WARNING] Equity section may show incorrect data. Please fix equity CSV.")
+            elif errors:
+                print("[INFO] Equity validation warnings:")
+                for err in errors:
+                    print(f"  {err}")
+            else:
+                print("[OK] Equity data validation passed")
         else:
-            print(f"→ No equity data found ({equity_csv})")
+            print(f"[INFO] No equity data found ({equity_csv})")
     except Exception as e:
-        print(f"⚠ Could not load equity data: {e}")
+        print(f"[WARNING] Could not load equity data: {e}")
         equity_df = None
 
     app = build_app(df, equity_df=equity_df, contract=contract, host=host, port=port)

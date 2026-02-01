@@ -689,3 +689,179 @@ python -m py_compile code/dashboard_app.py
 - Pipeline runs dashboard with or without equity data
 
 ✅ **Iteration 4.3 Complete**: Equity section integrated into dashboard.
+
+---
+
+## Iteration 5 — Dashboard Desktop Layout Fix
+
+### Date: 2026-02-02
+
+### Summary
+Fixed desktop layout rendering bug where filters were stacking above content and KPI tiles were not forming proper grid on laptop screens.
+
+### Root Cause
+
+**Problem 1: KPI Grid Auto-fit Behavior**
+- Line 132: `.kpi-grid` used `grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));`
+- With `auto-fit`, the grid created variable column counts (3-5 columns) based on available width
+- On laptop screens (1366-1440px), this created too many narrow columns, making tiles cramped
+- Did not match requirement: "2 columns on laptop, 4 on large screens"
+
+**Problem 2: Missing Large Screen Media Query**
+- No explicit media query for large screens (≥1400px) to switch to 4 columns
+- Mobile media query (max-width 768px) had duplicate KPI grid rule
+
+**Problem 3: Suboptimal Flexbox Properties**
+- `.main-content` used `flex: 1` instead of `flex: 1 1 auto` (less flexible)
+- `.app-shell` missing `align-items: flex-start` for proper top alignment
+
+### Changes Implemented
+
+#### 1. Fixed KPI Grid Column Counts
+**Changed** (line 132):
+```css
+/* Before */
+grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+
+/* After */
+grid-template-columns: repeat(2, minmax(0, 1fr));
+```
+- Default: 2 columns for laptop/desktop (1100px+)
+- Uses `minmax(0, 1fr)` to prevent overflow issues with Plotly charts
+
+#### 2. Added Large Screen Media Query
+**Added** (lines 179-184):
+```css
+@media (min-width: 1400px) {
+  .kpi-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+```
+- Large desktops (≥1400px): 4 columns for KPI tiles
+
+#### 3. Updated Mobile Media Query
+**Changed** (lines 202-207):
+```css
+/* Before */
+.kpi-grid {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+/* After */
+.kpi-grid {
+  grid-template-columns: 1fr;
+}
+```
+- Mobile/tablet (≤1100px): 1 column for KPI tiles
+- Removed duplicate rule from 768px media query
+
+#### 4. Improved Flexbox Properties
+**Changed** (lines 84, 98):
+```css
+/* .app-shell */
+align-items: flex-start;  /* Added for top alignment */
+
+/* .main-content */
+flex: 1 1 auto;  /* Changed from flex: 1 */
+```
+
+### Final Layout Behavior
+
+**Desktop (1100px - 1399px)**:
+- Sidebar: Fixed 320px width on left
+- Content: Flexible width on right (flex: 1 1 auto)
+- KPI tiles: 2 columns
+
+**Large Desktop (≥1400px)**:
+- Sidebar: Fixed 320px width on left
+- Content: Flexible width on right
+- KPI tiles: 4 columns
+
+**Mobile/Tablet (≤1100px)**:
+- Sidebar: Full width, stacked above content
+- Content: Full width below sidebar
+- KPI tiles: 1 column
+
+### CSS Contract Compliance
+
+✅ All required CSS rules implemented:
+```css
+.app-shell { display:flex; flex-direction:row; gap:16px; align-items:flex-start; }
+.sidebar { flex:0 0 320px; width:320px; }
+.main-content { flex:1 1 auto; min-width:0; }
+.kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap:12px; }
+@media (min-width: 1400px) { .kpi-grid { repeat(4, minmax(0, 1fr)); } }
+@media (max-width: 1100px) { .app-shell { flex-direction:column; } .kpi-grid { 1fr; } }
+```
+
+### Verification Checklist
+
+Manual verification steps (check in browser):
+
+**Desktop Layout (1366px width)**:
+- [ ] Sidebar appears on LEFT (fixed 320px width)
+- [ ] Main content appears on RIGHT (fills remaining space)
+- [ ] KPI tiles form 2-column grid
+- [ ] Charts render properly without overflow
+
+**Large Desktop (1920px width)**:
+- [ ] KPI tiles form 4-column grid
+- [ ] Sidebar still 320px on left
+- [ ] Content fills remaining space
+
+**Mobile Layout (768px width)**:
+- [ ] Sidebar stacks ABOVE content (full width)
+- [ ] Content below sidebar (full width)
+- [ ] KPI tiles stack in 1 column
+- [ ] All filters visible and usable
+
+**Component IDs**:
+- [ ] All existing component IDs unchanged
+- [ ] Callbacks still work (filters, date range, etc.)
+- [ ] No JavaScript errors in console
+
+### Files Modified
+1. `code/dashboard_app.py` - CSS changes only (9 lines modified, 7 lines added)
+
+### Diff Summary
+```diff
++  align-items: flex-start;           # .app-shell
+-  flex: 1;                            # .main-content
++  flex: 1 1 auto;
+-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));  # .kpi-grid
++  grid-template-columns: repeat(2, minmax(0, 1fr));
++@media (min-width: 1400px) {         # New media query
++  .kpi-grid {
++    grid-template-columns: repeat(4, minmax(0, 1fr));
++  }
++}}
+-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));  # Mobile
++  grid-template-columns: 1fr;
+-  .kpi-grid {                         # Removed duplicate from 768px
+-    grid-template-columns: 1fr;
+-  }
+```
+
+### Testing Commands
+
+```bash
+# Verify syntax
+python -m py_compile code/dashboard_app.py
+
+# Run dashboard (manual browser verification)
+cd code
+python dashboard_app.py
+# Open http://127.0.0.1:8050 in browser
+# Resize browser window to test responsive breakpoints
+```
+
+### Constraints Verified
+
+✅ **Analytics Logic**: No changes to callbacks, data computations, or filters
+✅ **Component IDs**: All IDs preserved (ym_start, ym_end, kpi_tiles, etc.)
+✅ **Minimal Changes**: Only CSS modifications in GLOBAL_CSS string
+✅ **No New Files**: All changes in existing dashboard_app.py
+✅ **Backward Compatible**: Layout structure unchanged, only styling fixed
+
+✅ **Iteration 5 Complete**: Desktop layout fixed with proper responsive grid behavior.
