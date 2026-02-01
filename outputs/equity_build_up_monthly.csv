@@ -1,0 +1,10 @@
+Loan_ID,Property_ID,AsOfMonth,Outstanding_Balance,Previous_Balance,Principal_Paid,Balance_Increase,Loan_Event
+L001,P123,2024-01,500000,0.0,0.0,0.0,Initial Loan
+L001,P123,2024-02,498500,500000.0,1500.0,0.0,Regular Payment
+L001,P123,2024-03,497000,498500.0,1500.0,0.0,Regular Payment
+L001,P123,2024-04,495500,497000.0,1500.0,0.0,Regular Payment
+L002,P456,2024-02,300000,0.0,0.0,0.0,Initial Loan
+L002,P456,2024-03,298000,300000.0,2000.0,0.0,Regular Payment
+L002,P456,2024-04,296000,298000.0,2000.0,0.0,Regular Payment
+L002,P456,2024-05,350000,296000.0,0.0,54000.0,Refinance/Top-up
+L002,P456,2024-06,348000,350000.0,2000.0,0.0,Regular Payment

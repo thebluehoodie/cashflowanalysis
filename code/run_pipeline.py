@@ -3,12 +3,13 @@
 run_pipeline.py
 
 Single entrypoint to run:
-Stage 1 (clean) -> Stage 2 (classify) -> diagnostics -> optional dashboard.
+Stage 1 (clean) -> Stage 2 (classify) -> diagnostics -> equity -> optional dashboard.
 
 Design:
 - No refactor of existing scripts.
 - Uses .env as the single source of truth where possible.
 - Uses subprocess for Stage 1 (argparse-based).
+- Equity module is optional (skips if inputs/loan_balances.csv missing).
 """
 
 from __future__ import annotations
@@ -65,6 +66,21 @@ def main() -> None:
         "--input", str(classified_csv),
         "--output-dir", str(diagnostics_dir),
     ])
+
+    # ---- Equity Build-Up (optional - requires inputs/loan_balances.csv) ----
+    equity_input = repo_root / "inputs" / "loan_balances.csv"
+    if equity_input.exists():
+        print(f"\n→ Running equity build-up module (found {equity_input})...")
+        try:
+            _run([sys.executable, str(code_dir / "equity_module.py")])
+        except subprocess.CalledProcessError as e:
+            print(f"\n⚠ Equity module failed with exit code {e.returncode}")
+            print("  Check inputs/loan_balances.csv for data errors.")
+            raise
+    else:
+        print(f"\n→ Skipping equity module (no loan_balances.csv found)")
+        print(f"  To enable equity analytics, create: {equity_input}")
+        print("  Required columns: Loan_ID, AsOfMonth, Outstanding_Balance")
 
     # ---- Optional: Dashboard (blocking server) ----
     # Set RUN_DASH=1 if you want to launch it at end.
