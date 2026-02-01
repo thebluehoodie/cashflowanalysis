@@ -79,22 +79,23 @@ input, textarea, select, button {{
 /* Responsive Shell Layout */
 .app-shell {{
   display: flex;
-  gap: 0;
+  flex-direction: row;
+  gap: 16px;
   height: calc(100vh - 70px);
 }}
 
 .sidebar {{
+  flex: 0 0 320px;
   width: 320px;
-  min-width: 320px;
   padding: 20px;
   background-color: {COLORS["bg_primary"]};
   border-right: 1px solid {COLORS["border"]};
   overflow-y: auto;
-  flex-shrink: 0;
 }}
 
 .main-content {{
   flex: 1;
+  min-width: 0;
   padding: 24px;
   overflow-y: auto;
   background-color: {COLORS["bg_secondary"]};
@@ -102,9 +103,10 @@ input, textarea, select, button {{
 
 /* Page Container */
 .page {{
-  max-width: 1600px;
+  max-width: 1400px;
   margin: 0 auto;
-  padding: 0 16px;
+  padding: 16px;
+  width: 100%;
 }}
 
 /* Card Styles */
@@ -127,8 +129,8 @@ input, textarea, select, button {{
 /* KPI Grid */
 .kpi-grid {{
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
 }}
 
 .kpi-tile {{
@@ -181,8 +183,8 @@ input, textarea, select, button {{
   }}
 
   .sidebar {{
+    flex: 0 0 auto;
     width: 100%;
-    min-width: 100%;
     border-right: none;
     border-bottom: 1px solid {COLORS["border"]};
     max-height: 400px;
